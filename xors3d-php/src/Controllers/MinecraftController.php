@@ -92,7 +92,6 @@ final class MinecraftController extends Controller
         ['key' => 'renderDist',  'label' => 'Render distance',   'type' => 'int',  'min' => 16, 'max' => 96, 'step' => 8],
         ['key' => 'resolution',  'label' => 'Resolution',        'type' => 'res',  'note' => 'restart'],
         ['key' => 'vsync',       'label' => 'VSync',             'type' => 'bool', 'note' => 'restart'],
-        ['key' => 'worldSize',   'label' => 'World size',        'type' => 'int',  'min' => 16, 'max' => 128, 'step' => 8, 'note' => 'new world'],
         ['key' => 'trees',       'label' => 'Tree density',      'type' => 'float', 'min' => 0.0, 'max' => 3.0, 'step' => 0.5, 'note' => 'new world'],
         ['key' => 'water',       'label' => 'Water',             'type' => 'bool', 'note' => 'new world'],
         ['key' => 'mobs',        'label' => 'Sheep count',       'type' => 'int',  'min' => 0, 'max' => 16, 'step' => 1, 'note' => 'new world'],
@@ -136,8 +135,11 @@ final class MinecraftController extends Controller
     /** @var array<string,bool> loaded chunk keys */ private array $loaded = [];
     /** @var array<string,int> "x,y,z" => type (0 = removed): tree + player edits over generated world */ private array $edits = [];
     /** @var array<string,array<string,int>> chunk key => its edits */ private array $editsByChunk = [];
+    /** @var array<string,bool> chunks whose trees have been generated */ private array $treeGen = [];
     private int $streamCX = PHP_INT_MAX;
     private int $streamCZ = PHP_INT_MAX;
+    private float $originX = 0.0;   // player home (world units), for mobs/backdrop
+    private float $originZ = 0.0;
 
     private float $seed = 0.0;
     private int $sunDisc = 0;
@@ -259,9 +261,8 @@ final class MinecraftController extends Controller
 
     private function spawnPlayer(): void
     {
-        $mid = ($this->wsize / 2) * self::BLOCK;
-        $this->px = $mid;
-        $this->pz = $mid;
+        $this->px = $this->originX;
+        $this->pz = $this->originZ;
         $this->py = (self::MAX_H + 6) * self::BLOCK;
         $this->vy = 0.0;
         $this->onGround = false;
@@ -285,7 +286,6 @@ final class MinecraftController extends Controller
                 }
             }
         }
-        $this->wsize = (int) $this->settings['worldSize'];
     }
 
     private function saveSettings(): void
@@ -383,7 +383,7 @@ final class MinecraftController extends Controller
             $e->xEntityColor($sp, $v, $v, min(255, $v + 8));
         }
 
-        $lo = -30 * self::BLOCK; $hi = ($this->wsize + 30) * self::BLOCK;
+        $lo = $this->px - 70 * self::BLOCK; $hi = $this->px + 70 * self::BLOCK;
         foreach ($this->clouds as &$c) {
             $c['x'] += $c['sp'];
             if ($c['x'] > $hi) { $c['x'] = $lo; }
@@ -526,42 +526,38 @@ final class MinecraftController extends Controller
     private function rebuildWorld(): void
     {
         $this->clearWorld();
-        $this->wsize = (int) $this->settings['worldSize'];
         $this->edits = [];
         $this->editsByChunk = [];
+        $this->treeGen = [];
         $this->height = [];
         $this->generateData();
     }
 
     /**
-     * Build the world as *data* only: a height map + tree/ore info. No block
-     * entities are created here - the streaming loader instantiates just the
-     * chunks around the player on demand (see updateStreaming/loadChunk).
+     * Infinite world: nothing is precomputed. The height map, ores and trees are
+     * generated procedurally per column/chunk on demand as the player explores
+     * (see heightAt / groundType / loadChunk). Only a new random seed + mobs.
      */
     private function generateData(): void
     {
-        $n = $this->wsize;
         $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
-
-        for ($x = 0; $x < $n; $x++) {
-            for ($z = 0; $z < $n; $z++) {
-                $f = $this->fbm($x * 0.08, $z * 0.08) / 0.9375;   // 0..1, avg ~0.5
-                $h = (int) round((self::SEA - 1) + $f * (self::MAX_H - (self::SEA - 1)));
-                $this->height[$x][$z] = max(0, min(self::MAX_H, $h));
-            }
-        }
-
-        // trees are baked into the edit overlay, so they stream in with chunks
-        $trees = (int) ($n * $n * 0.03 * (float) $this->settings['trees']);
-        for ($i = 0; $i < $trees; $i++) {
-            $x = mt_rand(2, $n - 3); $z = mt_rand(2, $n - 3);
-            $h = $this->height[$x][$z];
-            if ($h < self::SNOW && $h > self::SEA) {
-                $this->plantTreeData($x, $h + 1, $z);
-            }
-        }
-
         $this->spawnMobs((int) $this->settings['mobs']);
+    }
+
+    /** Deterministically populate a chunk's trees into the edit overlay (once). */
+    private function genTrees(int $cx, int $cz): void
+    {
+        $prob = 0.05 * (float) $this->settings['trees']; // per suitable column
+        $x0 = $cx * self::CH; $z0 = $cz * self::CH;
+        for ($x = $x0; $x < $x0 + self::CH; $x++) {
+            for ($z = $z0; $z < $z0 + self::CH; $z++) {
+                $h = $this->heightAt($x, $z);
+                if ($h <= self::SEA || $h >= self::SNOW) { continue; }
+                if ($this->hash3($x, 7, $z) < $prob) {
+                    $this->plantTreeData($x, $h + 1, $z);
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------- value noise
@@ -606,16 +602,14 @@ final class MinecraftController extends Controller
     private function terrainTopY(float $wx, float $wz): float
     {
         $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
-        $h = ($bx >= 0 && $bz >= 0 && $bx < $this->wsize && $bz < $this->wsize)
-            ? $this->height[$bx][$bz] : self::SEA;
+        $h = $this->heightAt($bx, $bz);
         return $h * self::BLOCK + self::BLOCK / 2;
     }
 
     private function isWaterAt(float $wx, float $wz): bool
     {
         $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
-        if ($bx < 0 || $bz < 0 || $bx >= $this->wsize || $bz >= $this->wsize) { return false; }
-        return $this->height[$bx][$bz] < self::SEA;
+        return $this->heightAt($bx, $bz) < self::SEA;
     }
 
     private function spawnMobs(int $count): void
@@ -623,8 +617,8 @@ final class MinecraftController extends Controller
         for ($i = 0; $i < $count; $i++) {
             $tries = 0;
             do {
-                $wx = mt_rand(2, $this->wsize - 3) * self::BLOCK;
-                $wz = mt_rand(2, $this->wsize - 3) * self::BLOCK;
+                $wx = $this->originX + mt_rand(-30, 30) * self::BLOCK;
+                $wz = $this->originZ + mt_rand(-30, 30) * self::BLOCK;
                 $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
                 $gt = $this->groundTop($bx, $bz);
                 $onTree = isset($this->cell["$bx," . ($gt + 1) . ",$bz"]); // avoid trees
@@ -664,16 +658,13 @@ final class MinecraftController extends Controller
     /** Topmost solid block cell in a column (handles built-up / dug terrain). */
     private function groundTop(int $bx, int $bz): int
     {
-        if ($bx < 0 || $bz < 0 || $bx >= $this->wsize || $bz >= $this->wsize) {
-            return -1;
-        }
-        $start = ($this->height[$bx][$bz] ?? self::SEA) + 4;
+        $start = $this->heightAt($bx, $bz) + 4;
         for ($y = $start; $y >= 0; $y--) {
             if (isset($this->cell["$bx,$y,$bz"])) {
                 return $y;
             }
         }
-        return $this->height[$bx][$bz] ?? -1;
+        return $this->heightAt($bx, $bz);
     }
 
     /**
@@ -705,8 +696,8 @@ final class MinecraftController extends Controller
     private function mobWalkable(float $nx, float $nz, int $curG): bool
     {
         $B = self::BLOCK;
-        $lo = 1.5 * $B; $hi = ($this->wsize - 2.5) * $B;
-        if ($nx < $lo || $nx > $hi || $nz < $lo || $nz > $hi) { return false; }
+        $leash = 70 * $B; // keep sheep roaming near home
+        if (abs($nx - $this->originX) > $leash || abs($nz - $this->originZ) > $leash) { return false; }
         if ($this->isWaterAt($nx, $nz)) { return false; }
         return !$this->mobBlocked($this->cellOf($nx), $this->cellOf($nz), $curG);
     }
@@ -782,14 +773,23 @@ final class MinecraftController extends Controller
 
     private function exposedBottom(int $x, int $z): int
     {
-        $min = $this->height[$x][$z];
+        $min = $this->heightAt($x, $z);
         foreach ([[1, 0], [-1, 0], [0, 1], [0, -1]] as [$dx, $dz]) {
             $nx = $x + $dx; $nz = $z + $dz;
-            $nh = ($nx < 0 || $nz < 0 || $nx >= $this->wsize || $nz >= $this->wsize)
-                ? -1 : $this->height[$nx][$nz];
+            $nh = $this->heightAt($nx, $nz);
             $min = min($min, $nh);
         }
         return max(0, $min);
+    }
+
+    /** Procedural surface height for ANY column (cached). Works for infinite world. */
+    private function heightAt(int $x, int $z): int
+    {
+        if (isset($this->height[$x][$z])) { return $this->height[$x][$z]; }
+        $f = $this->fbm($x * 0.08, $z * 0.08) / 0.9375;      // 0..1
+        $h = (int) round((self::SEA - 1) + $f * (self::MAX_H - (self::SEA - 1)));
+        $h = max(0, min(self::MAX_H, $h));
+        return $this->height[$x][$z] = $h;
     }
 
     private function hash3(int $x, int $y, int $z): float
@@ -802,7 +802,7 @@ final class MinecraftController extends Controller
     private function oreAt(int $x, int $y, int $z): int
     {
         $r = $this->hash3($x, $y, $z);
-        $h = $this->height[$x][$z] ?? self::SEA;
+        $h = $this->heightAt($x, $z);
         if ($y < $h - 6 && $r > 0.985) { return 12; } // diamond (deep, rare)
         if ($r > 0.972) { return 14; }                // iron
         if ($r > 0.945) { return 13; }                // coal
@@ -812,7 +812,7 @@ final class MinecraftController extends Controller
     /** Natural block type at a cell (before edits). 0 = air. */
     private function groundType(int $x, int $y, int $z): int
     {
-        $h = $this->height[$x][$z] ?? -1;
+        $h = $this->heightAt($x, $z);
         if ($y > $h || $y < 0) { return 0; }
         if ($y === $h) {
             if ($h >= self::SNOW) { return 6; }   // snow cap
@@ -827,7 +827,7 @@ final class MinecraftController extends Controller
     {
         $k = "$x,$y,$z";
         $this->edits[$k] = $type;
-        $ck = intdiv($x, self::CH) . ',' . intdiv($z, self::CH);
+        $ck = $this->cdiv($x) . "," . $this->cdiv($z);
         $this->editsByChunk[$ck][$k] = $type;
     }
 
@@ -877,7 +877,7 @@ final class MinecraftController extends Controller
 
     private function addToChunk(int $handle, int $bx, int $bz): void
     {
-        $ck = intdiv($bx, self::CH) . ',' . intdiv($bz, self::CH);
+        $ck = $this->cdiv($bx) . "," . $this->cdiv($bz);
         $this->chunk[$ck][] = $handle;
         $this->entChunk[$handle] = $ck;
     }
@@ -893,6 +893,8 @@ final class MinecraftController extends Controller
 
     // --------------------------------------------------- streaming chunk loader
 
+    private function cdiv(int $v): int { return (int) floor($v / self::CH); }
+
     /** Instantiate the visible shell of one chunk from data + edits. */
     private function loadChunk(int $cx, int $cz): void
     {
@@ -902,17 +904,18 @@ final class MinecraftController extends Controller
         $e = $this->e;
         $water = (int) $this->settings['water'];
 
+        if (!isset($this->treeGen[$ck])) { $this->treeGen[$ck] = true; $this->genTrees($cx, $cz); }
+
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
-        for ($x = $x0; $x < $x0 + self::CH && $x < $this->wsize; $x++) {
-            for ($z = $z0; $z < $z0 + self::CH && $z < $this->wsize; $z++) {
-                if ($x < 0 || $z < 0) { continue; }
-                $top = $this->height[$x][$z];
+        for ($x = $x0; $x < $x0 + self::CH; $x++) {
+            for ($z = $z0; $z < $z0 + self::CH; $z++) {
+                $top = $this->heightAt($x, $z);
                 for ($y = $this->exposedBottom($x, $z); $y <= $top; $y++) {
                     $k = "$x,$y,$z";
                     $t = $this->edits[$k] ?? $this->groundType($x, $y, $z);
                     if ($t > 0) { $this->spawn($e, $x, $y, $z, $t); }
                 }
-                if ($water && $this->height[$x][$z] < self::SEA) {
+                if ($water && $this->heightAt($x, $z) < self::SEA) {
                     $this->spawnWater($e, $x, self::SEA, $z);
                 }
             }
@@ -943,18 +946,16 @@ final class MinecraftController extends Controller
     /** Load chunks within render distance of ($wx,$wz); unload the rest. */
     private function updateStreaming(float $wx, float $wz): void
     {
-        $pcx = intdiv(max(0, $this->cellOf($wx)), self::CH);
-        $pcz = intdiv(max(0, $this->cellOf($wz)), self::CH);
+        $pcx = $this->cdiv($this->cellOf($wx));
+        $pcz = $this->cdiv($this->cellOf($wz));
         if ($pcx === $this->streamCX && $pcz === $this->streamCZ) { return; }
         $this->streamCX = $pcx; $this->streamCZ = $pcz;
 
         $r = (int) ceil(((int) $this->settings['renderDist']) / self::CH);
         $u = $r + 1;
-        $maxc = (int) ceil($this->wsize / self::CH) - 1;
 
         for ($cx = $pcx - $r; $cx <= $pcx + $r; $cx++) {
             for ($cz = $pcz - $r; $cz <= $pcz + $r; $cz++) {
-                if ($cx < 0 || $cz < 0 || $cx > $maxc || $cz > $maxc) { continue; }
                 if (!isset($this->loaded["$cx,$cz"])) { $this->loadChunk($cx, $cz); }
             }
         }
@@ -1088,9 +1089,9 @@ final class MinecraftController extends Controller
 
         foreach ([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as [$dx, $dy, $dz]) {
             $nx = $x + $dx; $ny = $y + $dy; $nz = $z + $dz;
-            if ($nx < 0 || $nz < 0 || $nx >= $this->wsize || $nz >= $this->wsize || $ny < 0) { continue; }
+            if ($ny < 0) { continue; }
             $nk = $this->key($nx, $ny, $nz);
-            if (isset($this->cell[$nk]) || !isset($this->loaded[intdiv($nx, self::CH) . ',' . intdiv($nz, self::CH)])) { continue; }
+            if (isset($this->cell[$nk]) || !isset($this->loaded[$this->cdiv($nx) . "," . $this->cdiv($nz)])) { continue; }
             $t = $this->edits[$nk] ?? $this->groundType($nx, $ny, $nz);
             if ($t > 0) { $this->spawn($e, $nx, $ny, $nz, $t); }
         }
@@ -1098,7 +1099,7 @@ final class MinecraftController extends Controller
 
     private function placeAt(Engine $e, int $x, int $y, int $z, int $type): void
     {
-        if ($x < 0 || $z < 0 || $x >= $this->wsize || $z >= $this->wsize || $y < 0 || $y > self::Y_MAX) { return; }
+        if ($y < 0 || $y > self::Y_MAX) { return; }
         if (isset($this->cell[$this->key($x, $y, $z)])) { return; }
         $this->setEdit($x, $y, $z, $type);
         $this->spawn($e, $x, $y, $z, $type);
@@ -1120,8 +1121,9 @@ final class MinecraftController extends Controller
 
     private function saveWorld(): void
     {
-        // compact: only the data model (height map + edits), not instantiated blocks
-        $data = ['size' => $this->wsize, 'seed' => $this->seed, 'height' => $this->height, 'edits' => $this->edits];
+        // infinite world: only the seed + player edits + which chunks have trees.
+        // Terrain/ores regenerate procedurally from the seed.
+        $data = ['seed' => $this->seed, 'edits' => $this->edits, 'treeGen' => array_keys($this->treeGen)];
         $ok = @file_put_contents($this->worldFile(), json_encode($data)) !== false;
         $this->status = $ok ? 'World saved.' : 'Save failed.';
     }
@@ -1134,14 +1136,12 @@ final class MinecraftController extends Controller
             return;
         }
         $this->clearWorld();
-        $this->wsize = (int) $d['size'];
         $this->seed = (float) ($d['seed'] ?? 0);
         $this->height = [];
-        foreach ($d['height'] as $x => $col) {
-            foreach ($col as $z => $h) { $this->height[(int) $x][(int) $z] = (int) $h; }
-        }
         $this->edits = [];
         $this->editsByChunk = [];
+        $this->treeGen = [];
+        foreach (($d['treeGen'] ?? []) as $ck) { $this->treeGen[(string) $ck] = true; }
         foreach (($d['edits'] ?? []) as $k => $type) {
             [$x, $y, $z] = array_map('intval', explode(',', (string) $k));
             $this->setEdit($x, $y, $z, (int) $type);
@@ -1157,9 +1157,8 @@ final class MinecraftController extends Controller
         $items   = ['Play', 'New World', 'Save World', 'Load World', 'Settings', 'Quit'];
         $actions = ['play', 'new', 'save', 'load', 'settings', 'quit'];
         $sel = 0; $e = $this->e;
-        $mid = ($this->wsize / 2) * self::BLOCK;
         $this->streamCX = PHP_INT_MAX;
-        $this->updateStreaming($mid, $mid); // stream the area around the map centre
+        $this->updateStreaming($this->originX, $this->originZ); // stream the area around the map centre
         $shot = getenv('CRAFT_MENUSHOT'); $sf = 0;
 
         while (true) {
@@ -1262,9 +1261,9 @@ final class MinecraftController extends Controller
     private function orbitBackdrop(): void
     {
         $e = $this->e;
-        $mid = ($this->wsize / 2) * self::BLOCK;
+        $mid = $this->originX;
         $t = $e->xMillisecs() / 4000.0;
-        $r = $this->wsize * self::BLOCK * 0.85;
+        $r = (int) $this->settings["renderDist"] * self::BLOCK * 0.8;
         $e->xPositionEntity($this->pivot, $mid, self::MAX_H * self::BLOCK, $mid);
         $e->xPositionEntity($this->camH, $mid + cos($t) * $r, (self::MAX_H + 6) * self::BLOCK, $mid + sin($t) * $r);
         $e->xPointEntity($this->camH, $this->pivot);
