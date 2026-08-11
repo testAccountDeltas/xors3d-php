@@ -75,7 +75,7 @@ final class MinecraftController extends Controller
     private array $settings = [
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
-        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 24,
+        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 32,
         'bloom' => 0, 'godrays' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
@@ -903,46 +903,93 @@ final class MinecraftController extends Controller
         $list[] = $w;
     }
 
-    // ------------------------------------------------ merged chunk meshing
+    // ------------------------------------------------ greedy chunk meshing
 
-    /** Cube face corner offsets (unit) + neighbour direction, per face. */
-    private const FACES = [
-        [[1, 0, 0],  [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]]],   // +X
-        [[-1, 0, 0], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]]], // -X
-        [[0, 1, 0],  [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]]],   // +Y
-        [[0, -1, 0], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]]], // -Y
-        [[0, 0, 1],  [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]],   // +Z
-        [[0, 0, -1], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]]], // -Z
-    ];
-
-    /** Add the exposed faces of one solid cell to the per-type surfaces. */
-    private function emitCell(int $mesh, array &$surf, int $x, int $y, int $z, int $type): void
+    /**
+     * Greedy mesher: merges coplanar, same-type exposed faces into large quads,
+     * dramatically cutting vertex/triangle count vs one quad per block face.
+     */
+    private function greedyMesh(int $mesh, int $x0, int $z0, int $yMax): void
     {
-        $e = $this->e; $B = self::BLOCK; $h = $B / 2;
-        $cx = $x * $B; $cy = $y * $B; $cz = $z * $B;
-        foreach (self::FACES as [$n, $corners]) {
-            if ($this->solidType($x + $n[0], $y + $n[1], $z + $n[2]) > 0) { continue; } // hidden face
-            if (!isset($surf[$type])) {
-                $surf[$type] = $e->xCreateSurface($mesh, $this->brush[$type]);
+        $e = $this->e; $B = self::BLOCK;
+        $dims = [self::CH, $yMax + 1, self::CH];
+        $off  = [$x0, 0, $z0];
+        $surf = [];
+
+        for ($d = 0; $d < 3; $d++) {
+            $u = ($d + 1) % 3; $v = ($d + 2) % 3;
+            $dd = $dims[$d]; $du = $dims[$u]; $dv = $dims[$v];
+            $mask = array_fill(0, $du * $dv, 0);
+
+            for ($xd = -1; $xd < $dd; $xd++) {
+                // build the face mask for this slice
+                $n = 0;
+                for ($xv = 0; $xv < $dv; $xv++) {
+                    for ($xu = 0; $xu < $du; $xu++) {
+                        $pa = [0, 0, 0]; $pa[$d] = $xd; $pa[$u] = $xu; $pa[$v] = $xv;
+                        $a = $this->solidType($off[0] + $pa[0], $off[1] + $pa[1], $off[2] + $pa[2]);
+                        $pb = $pa; $pb[$d] = $xd + 1;
+                        $b = $this->solidType($off[0] + $pb[0], $off[1] + $pb[1], $off[2] + $pb[2]);
+                        if (($a > 0) === ($b > 0)) { $mask[$n++] = 0; }
+                        elseif ($a > 0)           { $mask[$n++] = $a; }
+                        else                      { $mask[$n++] = -$b; }
+                    }
+                }
+                // greedy-merge the mask into quads
+                $n = 0;
+                for ($j = 0; $j < $dv; $j++) {
+                    $i = 0;
+                    while ($i < $du) {
+                        $c = $mask[$n + $i];
+                        if ($c === 0) { $i++; continue; }
+                        $w = 1;
+                        while ($i + $w < $du && $mask[$n + $i + $w] === $c) { $w++; }
+                        $hgt = 1; $stop = false;
+                        while ($j + $hgt < $dv) {
+                            for ($k = 0; $k < $w; $k++) {
+                                if ($mask[$n + $i + $k + $hgt * $du] !== $c) { $stop = true; break; }
+                            }
+                            if ($stop) { break; }
+                            $hgt++;
+                        }
+
+                        $type = abs($c);
+                        if (!isset($surf[$type])) { $surf[$type] = $e->xCreateSurface($mesh, $this->brush[$type]); }
+                        $s = $surf[$type];
+
+                        $plane = ($off[$d] + $xd + 0.5) * $B;      // face boundary plane
+                        $u0 = ($off[$u] + $i - 0.5) * $B;  $u1 = ($off[$u] + $i + $w - 0.5) * $B;
+                        $v0 = ($off[$v] + $j - 0.5) * $B;  $v1 = ($off[$v] + $j + $hgt - 0.5) * $B;
+
+                        $corner = static function (float $uc, float $vc) use ($d, $u, $v, $plane): array {
+                            $p = [0.0, 0.0, 0.0]; $p[$d] = $plane; $p[$u] = $uc; $p[$v] = $vc; return $p;
+                        };
+                        $c0 = $corner($u0, $v0); $c1 = $corner($u1, $v0);
+                        $c2 = $corner($u1, $v1); $c3 = $corner($u0, $v1);
+                        $a0 = $e->xAddVertex($s, $c0[0], $c0[1], $c0[2], 0, 0);
+                        $a1 = $e->xAddVertex($s, $c1[0], $c1[1], $c1[2], $w, 0);
+                        $a2 = $e->xAddVertex($s, $c2[0], $c2[1], $c2[2], $w, $hgt);
+                        $a3 = $e->xAddVertex($s, $c3[0], $c3[1], $c3[2], 0, $hgt);
+                        $e->xAddTriangle($s, $a0, $a1, $a2);
+                        $e->xAddTriangle($s, $a0, $a2, $a3);
+
+                        for ($l = 0; $l < $hgt; $l++) {
+                            for ($k = 0; $k < $w; $k++) { $mask[$n + $i + $k + $l * $du] = 0; }
+                        }
+                        $i += $w;
+                    }
+                    $n += $du;
+                }
             }
-            $s = $surf[$type];
-            $v = [];
-            $uv = [[0, 0], [1, 0], [1, 1], [0, 1]];
-            foreach ($corners as $i => $c) {
-                $v[] = $e->xAddVertex($s, $cx + $c[0] * $h, $cy + $c[1] * $h, $cz + $c[2] * $h, $uv[$i][0], $uv[$i][1]);
-            }
-            $e->xAddTriangle($s, $v[0], $v[1], $v[2]);
-            $e->xAddTriangle($s, $v[0], $v[2], $v[3]);
         }
     }
 
-    /** Build (or rebuild) one chunk as a single merged, face-culled mesh. */
+    /** Build (or rebuild) one chunk as a single greedy-merged mesh + water. */
     private function buildChunkMesh(int $cx, int $cz): void
     {
         $e = $this->e;
         $ck = "$cx,$cz";
 
-        // free previous entities of this chunk (rebuild case)
         foreach ($this->chunk[$ck] ?? [] as $h) {
             unset($this->meshCk[$h], $this->water[$h]);
             $e->xFreeEntity($h);
@@ -951,33 +998,32 @@ final class MinecraftController extends Controller
 
         if (!isset($this->treeGen[$ck])) { $this->treeGen[$ck] = true; $this->genTrees($cx, $cz); }
 
-        $mesh = $e->xCreateMesh();
-        $surf = [];
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
-        $waterOn = (int) $this->settings['water'];
-        $list = [];
-
+        $yMax = 0;
         for ($x = $x0; $x < $x0 + self::CH; $x++) {
             for ($z = $z0; $z < $z0 + self::CH; $z++) {
-                $top = $this->heightAt($x, $z);
-                $yMax = $top;
-                // include any stacked edits above the terrain (trees / towers)
-                for ($y = 0; $y <= $yMax; $y++) {
-                    $t = $this->solidType($x, $y, $z);
-                    if ($t > 0) { $this->emitCell($mesh, $surf, $x, $y, $z, $t); }
-                }
-                if ($waterOn && $top < self::SEA) { $this->spawnWater($cx, $x, $z, $list); }
+                if ($this->heightAt($x, $z) > $yMax) { $yMax = $this->heightAt($x, $z); }
             }
         }
-        // edits above terrain top (trees/placed) within this chunk
         foreach ($this->editsByChunk[$ck] ?? [] as $k => $t) {
-            if ($t <= 0) { continue; }
-            [$x, $y, $z] = array_map('intval', explode(',', $k));
-            if ($y > $this->heightAt($x, $z)) { $this->emitCell($mesh, $surf, $x, $y, $z, $t); }
+            if ($t > 0) { $y = (int) explode(',', $k)[1]; if ($y > $yMax) { $yMax = $y; } }
         }
+        $yMax = min(self::Y_MAX, $yMax);
 
+        $mesh = $e->xCreateMesh();
+        $this->greedyMesh($mesh, $x0, $z0, $yMax);
         $e->xUpdateNormals($mesh);
+        $e->xEntityFX($mesh, Constants::FX_DISABLECULLING);
         $e->xEntityPickMode($mesh, 2);
+
+        $list = [];
+        if ((int) $this->settings['water']) {
+            for ($x = $x0; $x < $x0 + self::CH; $x++) {
+                for ($z = $z0; $z < $z0 + self::CH; $z++) {
+                    if ($this->heightAt($x, $z) < self::SEA) { $this->spawnWater($cx, $x, $z, $list); }
+                }
+            }
+        }
 
         $this->chunkMesh[$ck] = $mesh;
         $this->meshCk[$mesh] = $ck;
@@ -1036,8 +1082,9 @@ final class MinecraftController extends Controller
     private function applyRenderDist(): void
     {
         $d = (int) $this->settings['renderDist'] * self::BLOCK;
-        $this->e->xCameraRange($this->camH, 0.2, $d * 1.3);
-        $this->e->xCameraFogRange($this->camH, $d * 0.55, $d * 0.95);
+        $this->e->xCameraRange($this->camH, 0.2, $d * 1.35);
+        // keep the view clear; only the far edge fades into fog
+        $this->e->xCameraFogRange($this->camH, $d * 0.80, $d * 1.15);
         $this->streamCX = PHP_INT_MAX; // force a streaming refresh
         $this->streamCZ = PHP_INT_MAX;
     }
