@@ -296,29 +296,39 @@ final class MinecraftController extends Controller
         $this->sunDisc = $e->xCreateSprite();
         $e->xEntityTexture($this->sunDisc, $e->xLoadTexture($sky . 'sun.png', 1 + 2 + 8));
         $e->xEntityFX($this->sunDisc, $fxSky);
-        $e->xScaleSprite($this->sunDisc, 26, 26);
+        $e->xScaleSprite($this->sunDisc, 34, 34);
 
         $this->moonDisc = $e->xCreateSprite();
         $e->xEntityTexture($this->moonDisc, $e->xLoadTexture($sky . 'moon.png', 1 + 2 + 8));
         $e->xEntityFX($this->moonDisc, $fxSky);
-        $e->xScaleSprite($this->moonDisc, 18, 18);
+        $e->xScaleSprite($this->moonDisc, 26, 26);
 
-        // real Minecraft cloud texture (with alpha) on flat slabs
-        $cloudTex = $e->xLoadTexture($sky . 'clouds.png', 1 + 2 + 8);
-        for ($i = 0; $i < 10; $i++) {
-            $c = $e->xCreateCube();
-            $w = mt_rand(10, 18); $d = mt_rand(8, 14);
-            $e->xScaleEntity($c, $this->scale * $w, $this->scale * 0.4, $this->scale * $d);
-            $e->xEntityTexture($c, $cloudTex);
-            $e->xEntityColor($c, 255, 255, 255);
-            $e->xEntityAlpha($c, 0.85);
-            $e->xEntityFX($c, $fxSky + Constants::FX_DISABLECULLING);
+        // soft, airy clouds: clusters of overlapping billboard puffs
+        $puffTex = $e->xLoadTexture($sky . 'puff.png', 1 + 2 + 8);
+        for ($i = 0; $i < 8; $i++) {
+            $pivot = $e->xCreatePivot();
+            $rx = mt_rand(9, 16);   // cloud radius (blocks)
+            $rz = mt_rand(6, 11);
+            $puffs = mt_rand(7, 13);
+            for ($p = 0; $p < $puffs; $p++) {
+                $ox = (mt_rand(-100, 100) / 100.0) * $rx;
+                $oz = (mt_rand(-100, 100) / 100.0) * $rz;
+                $oy = (mt_rand(-100, 100) / 100.0) * 1.2;
+                $size = mt_rand(7, 14);                    // puff diameter (blocks)
+                $sp = $e->xCreateSprite();
+                $e->xEntityTexture($sp, $puffTex);
+                $e->xEntityFX($sp, $fxSky);
+                $e->xEntityAlpha($sp, mt_rand(45, 75) / 100.0);
+                $e->xScaleSprite($sp, $size * self::BLOCK, $size * self::BLOCK);
+                $e->xEntityParent($sp, $pivot);
+                $e->xPositionEntity($sp, $ox * self::BLOCK, $oy * self::BLOCK, $oz * self::BLOCK, 0);
+            }
             $this->clouds[] = [
-                'ent' => $c,
-                'x'   => mt_rand(-20, 140) * self::BLOCK,
-                'y'   => (self::MAX_H + mt_rand(9, 13)) * self::BLOCK,
-                'z'   => mt_rand(-20, 140) * self::BLOCK,
-                'sp'  => (mt_rand(2, 5) / 100.0) * self::BLOCK,
+                'pivot' => $pivot,
+                'x'     => mt_rand(-20, 140) * self::BLOCK,
+                'y'     => (self::MAX_H + mt_rand(10, 15)) * self::BLOCK,
+                'z'     => mt_rand(-20, 140) * self::BLOCK,
+                'sp'    => (mt_rand(2, 5) / 100.0) * self::BLOCK,
             ];
         }
     }
@@ -348,7 +358,7 @@ final class MinecraftController extends Controller
         foreach ($this->clouds as &$c) {
             $c['x'] += $c['sp'];
             if ($c['x'] > $hi) { $c['x'] = $lo; }
-            $e->xPositionEntity($c['ent'], $c['x'], $c['y'], $c['z']);
+            $e->xPositionEntity($c['pivot'], $c['x'], $c['y'], $c['z']);
         }
         unset($c);
     }
@@ -1271,6 +1281,8 @@ final class MinecraftController extends Controller
                     $this->placeAt($e, $bx + $dx, $by + $dy, $bz + $dz, $this->selectedType());
                 }
             }
+
+            if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
             $e->xRenderWorld();
             $this->renderBloom();
