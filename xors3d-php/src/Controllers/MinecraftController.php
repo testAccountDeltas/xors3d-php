@@ -136,8 +136,11 @@ final class MinecraftController extends Controller
     private int $sunDisc = 0;
     private int $moonDisc = 0;
     private int $moon = 0;   // night directional light
+    private float $dayF = 1.0; // 0 night .. 1 noon (for tinting sky objects)
     /** @var array<int,array<string,mixed>> drifting cloud slabs */
     private array $clouds = [];
+    /** @var int[] all cloud puff sprite handles (for day/night tinting) */
+    private array $cloudPuffs = [];
     /** @var array<int,int> hotbar type id => 2D icon image handle */
     private array $icon = [];
     /** @var array<string,int> mob part textures */
@@ -322,6 +325,7 @@ final class MinecraftController extends Controller
                 $e->xScaleSprite($sp, $size * self::BLOCK, $size * self::BLOCK);
                 $e->xEntityParent($sp, $pivot);
                 $e->xPositionEntity($sp, $ox * self::BLOCK, $oy * self::BLOCK, $oz * self::BLOCK, 0);
+                $this->cloudPuffs[] = $sp;
             }
             $this->clouds[] = [
                 'pivot' => $pivot,
@@ -342,6 +346,10 @@ final class MinecraftController extends Controller
         $cyp = $e->xEntityY($this->camH, 1);
         $czp = $e->xEntityZ($this->camH, 1);
 
+        // constant on-screen size regardless of render distance (angular size)
+        $e->xScaleSprite($this->sunDisc, $d * 0.095, $d * 0.095);
+        $e->xScaleSprite($this->moonDisc, $d * 0.075, $d * 0.075);
+
         // sun sits opposite the sun-light ray direction
         $e->xTFormVector(0, 0, 1, $this->sun, 0);
         $fx = $e->xTFormedX(); $fy = $e->xTFormedY(); $fz = $e->xTFormedZ();
@@ -353,6 +361,12 @@ final class MinecraftController extends Controller
         $mx = $e->xTFormedX(); $my = $e->xTFormedY(); $mz = $e->xTFormedZ();
         $e->xPositionEntity($this->moonDisc, $cxp - $mx * $d, $cyp - $my * $d, $czp - $mz * $d);
         (-$my > -0.05) ? $e->xShowEntity($this->moonDisc) : $e->xHideEntity($this->moonDisc);
+
+        // clouds: tint by time of day so they aren't glaring white at night
+        $v = (int) (85 + $this->dayF * 170);
+        foreach ($this->cloudPuffs as $sp) {
+            $e->xEntityColor($sp, $v, $v, min(255, $v + 8));
+        }
 
         $lo = -30 * self::BLOCK; $hi = ($this->wsize + 30) * self::BLOCK;
         foreach ($this->clouds as &$c) {
@@ -368,6 +382,7 @@ final class MinecraftController extends Controller
         $e = $this->e;
 
         if (!(int) $this->settings['daynight']) {
+            $this->dayF = 1.0;
             $e->xCameraClsColor($this->camH, 140, 190, 235);
             $e->xCameraFogColor($this->camH, 140, 190, 235);
             $e->xRotateEntity($this->sun, 50, 30, 0);
@@ -377,12 +392,15 @@ final class MinecraftController extends Controller
             return;
         }
 
-        $ang = fmod($e->xMillisecs() / 120000.0, 1.0) * 360.0;
+        $t = getenv('CRAFT_TIME');
+        $frac = ($t !== false) ? (float) $t : fmod($e->xMillisecs() / 120000.0, 1.0);
+        $ang = $frac * 360.0;
         $e->xRotateEntity($this->sun, $ang, 30, 0);
         $e->xRotateEntity($this->moon, $ang + 180.0, 30, 0); // opposite the sun
 
         $day   = max(0.0, sin(deg2rad($ang)));   // 1 at noon, 0 at night
         $night = max(0.0, -sin(deg2rad($ang)));  // 1 at midnight, 0 at day
+        $this->dayF = $day;
 
         // sun bright by day, moon dim-blue by night
         $e->xLightColor($this->sun, (int) (255 * $day), (int) (250 * $day), (int) (235 * $day));

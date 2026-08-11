@@ -63,8 +63,9 @@ function radial(string $path, float $coreR, float $glowPow,
 }
 
 puff("$dir/puff.png");
-radial("$dir/sun.png",  0.42, 2.6, 255, 252, 230, 255, 150, 45);
-radial("$dir/moon.png", 0.40, 3.2, 235, 240, 255, 120, 150, 220);
+// tighter halo so the disc reads as a ball and does not wash out the screen
+radial("$dir/sun.png",  0.34, 4.5, 255, 250, 225, 255, 150, 45);
+radial("$dir/moon.png", 0.32, 5.0, 235, 240, 255, 130, 155, 220);
 
 echo "Generated sky textures in $dir\n";
 foreach (['puff', 'sun', 'moon'] as $f) {
