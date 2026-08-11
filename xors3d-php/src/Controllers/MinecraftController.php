@@ -515,34 +515,83 @@ final class MinecraftController extends Controller
                 'dx' => 0.0, 'dz' => 0.0, 'yaw' => 0.0, 'timer' => 0];
     }
 
+    /** Topmost solid block cell in a column (handles built-up / dug terrain). */
+    private function groundTop(int $bx, int $bz): int
+    {
+        if ($bx < 0 || $bz < 0 || $bx >= $this->wsize || $bz >= $this->wsize) {
+            return -1;
+        }
+        $start = ($this->height[$bx][$bz] ?? self::SEA) + 4;
+        for ($y = $start; $y >= 0; $y--) {
+            if (isset($this->cell["$bx,$y,$bz"])) {
+                return $y;
+            }
+        }
+        return $this->height[$bx][$bz] ?? -1;
+    }
+
+    /**
+     * Can a sheep step into this column from a ground of height $curG?
+     * Blocks on: void, cliffs higher than one block, or anything occupying the
+     * body space just above the surface (trees, placed blocks).
+     */
+    private function mobBlocked(int $bx, int $bz, int $curG): bool
+    {
+        $gt = $this->groundTop($bx, $bz);
+        if ($gt < 0) { return true; }                 // void / out of bounds
+        if ($gt - $curG > 1) { return true; }         // cliff too tall to climb
+        if (isset($this->cell["$bx," . ($gt + 1) . ",$bz"])) { return true; } // obstacle at body
+        if (isset($this->cell["$bx," . ($gt + 2) . ",$bz"])) { return true; }
+        return false;
+    }
+
+    private function mobPickDir(array &$m): void
+    {
+        if (mt_rand(0, 3) === 0) {
+            $m['dx'] = 0.0; $m['dz'] = 0.0;            // idle graze
+        } else {
+            $a = mt_rand(0, 359) * M_PI / 180.0;
+            $m['dx'] = sin($a); $m['dz'] = cos($a);
+            $m['yaw'] = $a * 180.0 / M_PI;
+        }
+    }
+
     private function updateMobs(): void
     {
-        $e = $this->e; $B = self::BLOCK; $spd = 0.03;
+        $e = $this->e; $B = self::BLOCK; $spd = 0.035;
         $lo = 1.5 * $B; $hi = ($this->wsize - 2.5) * $B;
 
         foreach ($this->mobs as &$m) {
+            $cbx = $this->cellOf($m['x']); $cbz = $this->cellOf($m['z']);
+            $curG = $this->groundTop($cbx, $cbz);
+
             if (--$m['timer'] <= 0) {
-                if (mt_rand(0, 2) === 0) {          // idle
-                    $m['dx'] = 0.0; $m['dz'] = 0.0;
+                $this->mobPickDir($m);
+                $m['timer'] = mt_rand(80, 220);
+            }
+
+            $moving = ($m['dx'] !== 0.0 || $m['dz'] !== 0.0);
+            if ($moving) {
+                $nx = $m['x'] + $m['dx'] * $spd * $B;
+                $nz = $m['z'] + $m['dz'] * $spd * $B;
+                $bx = $this->cellOf($nx); $bz = $this->cellOf($nz);
+
+                $blocked = $nx < $lo || $nx > $hi || $nz < $lo || $nz > $hi
+                        || $this->isWaterAt($nx, $nz)
+                        || $this->mobBlocked($bx, $bz, $curG);
+
+                if ($blocked) {
+                    // try to go around: pick a fresh heading and pause briefly
+                    $this->mobPickDir($m);
+                    $m['timer'] = mt_rand(30, 80);
                 } else {
-                    $a = mt_rand(0, 359) * M_PI / 180.0;
-                    $m['dx'] = sin($a); $m['dz'] = cos($a);
-                    $m['yaw'] = $a * 180.0 / M_PI;
+                    $m['x'] = $nx; $m['z'] = $nz;
                 }
-                $m['timer'] = mt_rand(60, 200);
             }
 
-            $nx = $m['x'] + $m['dx'] * $spd * $B;
-            $nz = $m['z'] + $m['dz'] * $spd * $B;
-            if ($nx < $lo || $nx > $hi || $nz < $lo || $nz > $hi || $this->isWaterAt($nx, $nz)) {
-                $m['dx'] = -$m['dx']; $m['dz'] = -$m['dz']; // turn away from edge/water
-                $m['yaw'] = fmod($m['yaw'] + 180.0, 360.0);
-                $m['timer'] = mt_rand(60, 120);
-            } else {
-                $m['x'] = $nx; $m['z'] = $nz;
-            }
-
-            $e->xPositionEntity($m['pivot'], $m['x'], $this->terrainTopY($m['x'], $m['z']), $m['z']);
+            $gy = $this->groundTop($this->cellOf($m['x']), $this->cellOf($m['z']));
+            $y = (($gy >= 0) ? $gy : self::SEA) * $B + $B / 2;
+            $e->xPositionEntity($m['pivot'], $m['x'], $y, $m['z']);
             $e->xRotateEntity($m['pivot'], 0, $m['yaw'], 0);
         }
         unset($m);
