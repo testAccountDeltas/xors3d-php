@@ -1,0 +1,744 @@
+Help for FastImage v1.7x for Xors3D & Blitz3D
+
+
+	Official site: http://www.fastlibs.com
+	Forum: http://blitz.pp.ru/forum/showthread.php?s=&threadid=3177
+	(c) 2006-2010 Created by MixailV aka Monster^Sage [monster-sage@mail.ru]
+
+
+
+The fastest 2D graphics library for Blitz3D and Blitz3D SDK (3D mode).
+FastImage provides seamless access to DirectX 7 API functionality using Blitz-style function calls.
+Function names are in fact similar to those of BlitzMAX. The library supports image colour
+and transparency manipulations, all kinds of transformations and blending with pixel-perfect quality.
+You will get control over 2D projection and drawing any complex primitives.
+FastImage comes with a set of examples to quickly get you up to speed on its features.
+Library version with DirectX 9 support is also presented. It is only available as a part of Xors3D engine.
+
+
+
+History:
+
+; v1.72.1
+; - DrawPoly function bug fixed;
+; - fixed bug for SetBlend & SetCustomBlend.
+
+
+; v1.72 (for Xors3D & Blitz3D only)
+; - The algorithm for viewport has been completely rewritten.
+;   Now it handles clipping of invisible parts properly on any graphics card and it no longer uses clip-planes.
+;   Warning! The 2D projection transformation doesn't affect the viewport anymore.
+
+
+; v1.7
+; - added reconstructions of the library after blocking OS (Win+L)
+;   and output from fullscreen mode (Alt+Tab), currently only for Blitz3D version 1.99 and Blitz3D SDK 1.02 !
+; - added new parameter maxWidth% for DrawText function
+; - added new parameter maxWidth% for StringWidthEx function
+; - added new flag for DrawTextRect function (allows not to draw text on screen and afterwards get characteristic of the formatted text)
+; - added new functions: TextRectCount, TextRectMaxWidth, TextRectWidth for reception characteristic text after command DrawTextRect
+
+
+; v1.61
+; - fixed bug (affected EntityFX=4 from Blitz to vertex alpha)
+; - corrected conclusion of the text and anim images in connection with particularity Blitz3D 1.99
+
+
+
+
+* MAIN FUNCTIONS:
+
+
+InitDraw% ()
+	The main function of the library. Initialize library after Graphics3D command.
+	Return not zero value, if library successfully initialized.
+	
+
+DeinitDraw% ()
+	Free all resources of the library (free images and fonts from memory).
+	This command is useful before ClearWorld or EndGraphics commands.
+
+
+StartDraw% ()
+	Use function before any function of the drawing.
+	Example of drawing after 3D graphs:
+		...
+		RenderWorld
+		StartDraw
+			... (draw 2D graphics - images, texts, primitives)
+		EndDraw
+
+	Example of drawing before and after 3D graphs:
+		...
+		Cls
+		StartDraw
+			... (draw 2D graphics - images, texts, primitives)
+		EndDraw
+		CameraClsMode camera, 0, 1
+		RenderWorld
+		StartDraw
+			... (draw 2D graphics - images, texts, primitives)
+		EndDraw
+
+	See any example for library...
+		
+
+EndDraw% ()
+	The function must be executed after all operation of the drawing and after StartDraw always.
+
+
+
+
+* ADJUSTMENT DRAWING:
+
+
+SetBlend% (blend%)
+	SetBlend controls how pixels are combined with existing pixels in the back buffer when drawing.
+	Default blend value: MASKBLEND 
+	Available following variants (constants)
+	
+		FI_SOLIDBLEND = 0
+			Pixels overwrite existing backbuffer pixels without transparency.
+			
+		FI_ALPHABLEND = 1
+			Pixels are alpha blended with existing backbuffer pixels.
+			
+		FI_LIGHTBLEND = 2
+			Pixel colors are added to backbuffer pixel colors, giving a 'lighting' effect.
+			
+		FI_SHADEBLEND = 3
+			Pixel colors are multiplied with backbuffer pixel colors, giving a 'shading' effect.
+			
+		FI_MASKBLEND = 4
+			Pixels are drawn only if their alpha component is greater than 0.5.
+			
+		FI_MASKBLEND2 = 5
+			Analogue MASKBLEND, but edges of image with alpha-channel will more smoothed.
+			
+		FI_INVALPHABLEND = 6
+			Pixels are inverse alpha blended with existing backbuffer pixels.
+
+		
+SetCustomBlend% (source_blend%, destination_blend%)
+	Function allows create custom blends for primitives.
+	Use DirectX7 D3DBLEND_* flags for params source_blend% and destination_blend%.
+		D3DBLEND_ZERO   = 1
+		D3DBLEND_ONE    = 2
+		D3DBLEND_SRCCOLOR = 3
+		D3DBLEND_INVSRCCOLOR    = 4
+		D3DBLEND_SRCALPHA = 5
+		D3DBLEND_INVSRCALPHA    = 6
+		D3DBLEND_DESTALPHA = 7
+		D3DBLEND_INVDESTALPHA   = 8
+		D3DBLEND_DESTCOLOR = 9
+		D3DBLEND_INVDESTCOLOR   = 10
+		D3DBLEND_SRCALPHASAT    = 11
+		D3DBLEND_BOTHSRCALPHA   = 12
+		D3DBLEND_BOTHINVSRCALPHA  = 13
+	source_blend% - DirectX7 D3DBLEND_* constant for source blend
+	destination_blend% - DirectX7 D3DBLEND_* constant for destination blend
+	See example FastImage_Example_CustomBlends.bb
+
+	
+SetAlpha% (alpha#)
+	Set current alpha level for primitives.
+	Alpha controls the transparency level when the ALPHABLEND blend mode is in effect.
+	The range from 0.0 to 1.0 allows a range of transparancy from completely transparent to completely solid.
+	
+
+SetColor% (red%, green%, blue%)
+	Function affects the color of primitives.
+	The red%, green% and blue% parameters should be in the range of 0 to 255.
+	Default color - white (255, 255, 255).
+
+	
+SetCustomColor% (ColorVertex0%, ColorVertex1%, ColorVertex2%, ColorVertex3%)
+	Function affects the color of vertexes of the primitives.
+	Format (hex) $AARRGGBB:
+		high byte (fourth) $AA - transparency of vertex of the primitive ($00-completely transparent, $FF-completely solid)
+		3rd byte $RR - red value
+		2nd byte $GG - green value
+		low byte (1st) $BB - blue value
+	SetCustomColor overwrite SetColor value.
+
+
+SetRotation% (Rotation#)
+	Function set current rotation (in degrees) for primitives.
+
+
+SetScale% (scaleX#, scaleY#)
+	Function set current scale.
+	ScaleX# and ScaleY# multiply the width and height of drawing commands where 0.5 will half
+	the size of the drawing and 2.0 is equivalent to doubling the size.
+
+
+SetTransform% (rotation#, scaleX#, scaleY#)
+	Set current rotation and scale.
+	SetTransform is a shortcut for setting both the rotation and scale parameters with a single function call.
+
+
+SetMatrix% (xx#, xy#, yx#, yy#)
+	Function set matrix of transformation for primitives ( 2 x 2 ).
+	xx# and xy# - X axis vector
+	yx# and yy# - Y axis vector
+
+
+SetOrigin% (x%, y%)
+	Set drawing origin.
+	The current Origin is an x,y coordinate added to all drawing x,y coordinates after any rotation or scaling.
+
+
+SetHandle% (x%, y%)
+	Set drawing handle.
+	The drawing handle is a 2D offset subtracted from the x,y location
+	of all drawing commands except DrawImage as Images have their own unique handles.
+	Unlike SetOrigin the drawing handle is subtracted before rotation and scale are applied
+	providing a local origin.
+
+
+SetLineWidth% (width#)
+	Sets pixel width of lines drawn with the DrawLine & DrawLineSimple commands.
+
+
+SetViewport% (x%, y%, width%, height%)
+	Set drawing viewport.
+	The current ViewPort defines an area within the back buffer that all drawing is clipped to.
+	Any regions of a DrawCommand that fall outside the current ViewPort are not drawn.
+	Set width or height values less or equal zero for disable viewport. 
+
+
+SetMipLevel% (level%)
+	For advanced users only.
+	Set maximum level for MIPMAPs.
+
+
+SetCustomState% (operation%, value%)
+	For advanced users only.
+	Analogue DirectX7 SetRenderState(operation%, value%)
+
+
+SetCustomTextureState% (operation%, value%)
+	For advanced users only.
+	Analogue DirectX7 SetTextureStageState (0, operation%, value%)
+	Use DirectX7 D3DTSS_* flags for operation% param.
+
+
+
+
+* WORK WITH PRIMITIVES:
+
+
+CreateImageEx% (texure%, width%, height% [, imageFlags% = FI__AUTOFLAGS] )
+	Function create new image from Blitz3D texure with width% and height% size.
+        imageFlags% (unnecessary) - available following values:
+	
+		FI_AUTOFLAGS = -1
+			If flags is -1, the auto image flags are used: See AutoImageFlags
+			
+		FI_NONE = 0
+			Empty flag.
+		
+		FI_MIDHANDLE = 1
+			Set an image's handle to its center.
+		
+		FI_FILTEREDIMAGE = 2
+			The image is smoothed when scaled up to greater than its original size, when rotated,
+			or when drawn at fractional pixel coordinates
+	
+	If successful then return a new image, else zero (if texture not exist).
+
+
+
+LoadImageEx% (fileName$, textureFlags%, imageFlags%)
+	Load image from file fileName$.
+	textureFlags% - Blitz3D flags for loading textures (LoadTexture or LoadAnimTexture)
+        imageFlags% (unnecessary) - available following values:
+	
+		FI_AUTOFLAGS = -1
+			If flags is -1, the auto image flags are used: See AutoImageFlags
+			
+		FI_NONE = 0
+			Empty flag.
+		
+		FI_MIDHANDLE = 1
+			Set an image's handle to its center.
+		
+		FI_FILTEREDIMAGE = 2
+			The image is smoothed when scaled up to greater than its original size, when rotated,
+			or when drawn at fractional pixel coordinates
+	
+	If successful then return a new image, else zero (if texture not exist).
+	Example of use: FastImage_Example_TestObjects.bb
+		
+
+LoadAnimImageEx% (fileName$, textureFlags%, frameWidth%, frameHeight%, firstFrame%, frameCount%, imageFlags%)
+	Load a multi-frame image from file fileName$.
+	textureFlags% - Blitz3D flags for loading textures (LoadTexture or LoadAnimTexture)
+        imageFlags% (unnecessary) - available following values:
+	
+		FI_AUTOFLAGS = -1
+			If flags is -1, the auto image flags are used: See AutoImageFlags
+			
+		FI_NONE = 0
+			Empty flag.
+		
+		FI_MIDHANDLE = 1
+			Set an image's handle to its center.
+		
+		FI_FILTEREDIMAGE = 2
+			The image is smoothed when scaled up to greater than its original size, when rotated,
+			or when drawn at fractional pixel coordinates
+	
+	If successful then return a new image, else zero (if texture not exist).
+	Example of use: FastImage_Example_Animation.bb
+
+
+SetImageHandle% (image%, x%, y%)
+	Set an image's handle to an arbitrary point.
+	An image's handle is subtracted from the coordinates of DrawImageEx before rotation and scale are applied.
+	
+
+AutoImageFlags% (flags%)
+	Set auto image flags.
+	The auto image flags are used by LoadImageEx, LoadAnimImageEx, CreateImageEx when no image flags are specified.
+	See CreateImageEx for a full list of valid image flags. AutoImageFlags defaults to FI_FILTEREDIMAGE + FI_MIDHANDLE.
+	
+	
+MidHandleImage% (image%)
+	Set an image's handle to its center.
+	
+
+AutoMidHandleEx% (state%)
+	Enable or disable auto midhandle mode.
+	When auto midhandle mode is enabled, all images are automatically 'midhandled' (see MidHandleImage)
+	when they are created. If auto midhandle mode is disabled, images are handled by their top left corner.
+	AutoMidHandle defaults to False.
+
+	
+FreeImageEx% (image%, freeTexture%=0)
+	Free image from memory.
+	If freeTexture%=1 then free image texture from memory.
+
+
+DrawImageEx% (image%, x%, y% [, frame% = 0] )
+	Draw an image or anim image to the back buffer.
+	Drawing is affected by the current blend mode, color, scale and rotation.
+	If the blend mode is ALPHABLEND the image is affected by the current alpha value and images
+	with alpha channels are blended correctly with the background.
+
+
+DrawImageRectEx% (image%, x%, y%, width%, height% [, frame% = 0] )
+	Draw an image to a rectangular area of the back buffer.
+	Drawing is affected by the current blend mode, color, scale and rotation.
+	If the blend mode is ALPHABLEND, then the image is also affected by the current alpha value.
+
+
+DrawImagePart% (image%, x%, y%, width%, height%, partX%=0, partY%=0, partWidth%=0, partHeight%=0, frame%=0, wrap%=FI_NOWRAP)
+	Draw part of image% to the back buffer.
+	Wrap% - available following values:
+		FI_NOWRAP = 0 - not wrap
+		FI_WRAPU = 1 - repeat by X axis
+		FI_MIRRORU = 2 - mirror by X axis
+		FI_WRAPV = 4 - repeat by Y axis
+		FI_MORRORV = 8 - mirror by Y axis
+		FI_WRAPUV = 5 - repeat by X And Y axises
+		FI_MIRRORUV = 10 - mirror by X And Y axises
+		You can combine FI_WRAPU, FI_MIRRORU, FI_WRAPV, FI_MIRRORV flags with OR operator.
+	Example of use: FastImage_Example_DrawImagePart.bb
+
+
+DrawRect% (x%, y%, width%, height% [, fill% = 1] )
+	Draw a rectangle.
+	Sets the color of a rectangular area of pixels using the current drawing color defined with the SetColor command.
+	Other commands that affect the operation of DrawRect include SetHandle, SetScale, SetRotation,
+		SetOrigin, SetViewPort, SetBlend and SetAlpha.
+
+
+DrawRectSimple% (x%, y%, width%, height% [, fill% = 1] )
+	Draw a rectangle without transformations.
+	Sets the color of a rectangular area of pixels using the current drawing color defined with the SetColor command.
+	Other commands that affect the operation of DrawRectSimple include SetViewPort, SetBlend and SetAlpha.
+	
+
+DrawLine% (x%, y%, x2%, y2%)
+	Draw a line.
+	DrawLine draws a line from x, y to x2, y2 with the current drawing color.
+	Other commands that affect the drawing of lines include SetLineWidth, SetColor, SetHandle, SetScale,
+		SetRotation, SetOrigin, SetViewPort, SetBlend and SetAlpha. 
+
+	
+DrawLineSimple% (x%, y%, x2%, y2%)
+	Draw a line without transformations.
+	DrawLine draws a line from x, y to x2, y2 with the current drawing color.
+	Other commands that affect the drawing of lines include SetLineWidth, SetViewPort, SetBlend and SetAlpha. 
+
+
+DrawPlot% (x%, y%)
+	Draw a point at x%, y% position.
+	Other commands that affect the operation of DrawPlot include SetViewPort, SetBlend and SetAlpha.
+
+
+DrawOval% (x%, y%, width%, height%)
+	Draw an oval (or circle).
+	DrawOval draws an oval that fits in the rectangular area defined by x, y, width and height parameters.
+	Other commands that affect the operation of DrawRect include SetHandle, SetScale, SetRotation,
+		SetOrigin, SetViewPort, SetBlend and SetAlpha.
+
+
+DrawPoly% (x%, y%, bank%, image%=0, frame%=0, color%=FI_NONE)
+	Draw a custom primitive at defined postition.
+	bank - Blitz3D bank with information about primitive (see below)
+	image - primitive possible to flood image texture
+	frame - frame for anim image
+	color - overlay color and alpha flags:
+		FI_NONE - use vertex color from primitive
+		FI_COLOROVERLAY - use current color for drawing (from SetColor & SetAlpha funcs)
+		
+	bank data description:
+		[displacement]  -  [description]
+
+		+0  - vertexes count (integer value)
+
+		+4  - Wrap flag (refer to in detail in DrawImagePart description)
+
+		+8  - method of the drawing the primitive, possible following constants:
+			FI_POINTLIST     = 1 - list of points
+			FI_LINELIST      = 2 - list of lines
+			FI_LINESTRIP     = 3 - list of lines (unceasing line)
+			FI_TRIANGLELIST  = 4 - list of triangles (with list of indexes)
+			FI_TRIANGLESTRIP = 5 - strip of triangles
+			FI_TRIANGLEFAN   = 6 - fan of triangles
+
+		+12 - _ONLY FOR FI_TRIANGLELIST_ = bank with list of indexes
+
+		+16 - _ONLY FOR FI_TRIANGLELIST_ = count indexes in bank /\
+
+		+20 - vertex data, each vertex has a size 20 byte and consists of following parameter:
+			(N = 1 ... 16384 - maximum count of the vertexes)
+			20*N + 0  - locale X coordinate (float value)
+			20*N + 4  - locale Y coordinate (float value)
+			20*N + 8  - color and alpha value of the vertex in format $AARRGGBB (integer value)
+			20*N + 12 - U texture coordinate  (float)
+			20*N + 16 - V texture coordinate (float)
+
+	Example of use: FastImage_Example_DrawPoly.bb, FastImage_Example_DrawPoly2.bb
+
+
+
+
+* PROPERTIES OF THE LIBRARY AND IMAGES:
+
+
+GetProperty% ()
+	Returns all properties of the library for one call.
+	Simple example:
+	
+		GetProperty
+		LibraryBlend	= FI_Property\Blend
+		LibraryAlpha	= FI_Property\Alpha
+		LibraryRed	= FI_Property\Red
+		LibraryGreen	= FI_Property\Green
+		... and etc.
+		
+	Available properties:
+
+		Blend%
+		Alpha#, Red%, Green%, Blue%
+		ColorVertex0%, ColorVertex1%, ColorVertex2%, ColorVertex3%                                 	
+		Rotation#, ScaleX#, ScaleY#
+		MatrixXX#, MatrixXY#, MatrixYX#, MatrixYY#
+		HandleX%, HandleY%
+		OriginX%, OriginY%
+		AutoHandle%, AutoFlags%
+		LineWidth#
+		ViewportX%, ViewportY%, ViewportWidth%, ViewportHeight%
+		MipLevel%
+		ProjScaleX#, ProjScaleY#, ProjRotation#
+		ProjOriginX%, ProjOriginY%
+		ProjHandleX%, ProjHandleY%
+		TestRadius%
+
+	Example of use: FastImage_Example_All.bb
+
+
+GetImageProperty% (image%)
+	Returns all properties of the image for one call.
+	Simple example:
+	
+		GetImageProperty image
+		ImageWidth  = FI_ImageProperty\Width
+		ImageHeight = FI_ImageProperty\Height
+		ImageFrames = FI_ImageProperty\Frames
+		... and etc.
+		
+	Available properties of the image:
+
+		HandleX%
+		HandleY%
+		Width%
+		Height%
+		Frames%
+		Flags%
+		Texture%
+
+
+
+
+* WORK WITH 2D PROJECTION:
+
+SetProjScale% (scaleX#, scaleY#)
+	Set scale of whole 2D-projection, 1.0 - without scale. This command is usefull when
+	your application is "sharpened" under one video mode, but you need use your application
+	in other mode, also this command can be used for creating different effects.
+	By default scale is equal to one.
+	Example: Your game is programmed under permission 1024х768 pixels, but you want
+	your game to work also in 800х600. Set scale on both axes, equal
+	scale# = 800.0 / 1024.0, and execute command SetProjScale scale#, scale#
+	Remember, that at application of this transformation your pictures will not
+	maximally clearly drawn and primitives will not maximally exactly reflected!
+
+
+SetProjRotation% (rotation#)
+	Turns whole 2D projection on any angle (in degrees). A turn is carried out in relation to
+	center, what is set by command SetProjHandle or MidHandleProj. By default center is
+	placed in coordinates x=0, y=0 of the 2D-projection (left overhead corner).
+	By default angle is equal to zero.
+	Remember, that at application of this transformation your pictures will not
+	maximally clearly drawn and primitives will not maximally exactly reflected!
+
+
+SetProjTransform% (rotation#, scaleX#, scaleY#)
+	This procedure allows you set scale and rotation at the same time. Read about its properties
+	in descriptions of commands SetProjRotation and SetProjScale.
+
+
+SetProjOrigin% (x%, y%)
+	Sets displacements of whole 2D projection on the axes X and Y. It is usefull
+	for scrolling and different effects. By default displacement is equal to zero.
+
+SetProjHandle% (x%, y%)
+	Sets local center of the whole 2D projection, relatively that center will work
+	displacement (ProjOrigin) and rotation (ProjRotation) of the projection. By default center
+	is placed in coordinates x=0, y=0 of the 2D projection (left overhead corner).
+
+
+MidHandleProj% ()
+	Automatically sets center of whole 2D projection, that is equal to half of height
+	and width of graphics mode, set before by Blitz command Graphics3D,
+	relatively this local center will work displacement (ProjOrigin)
+	and rotation (ProjRotation) of the projection. By default center is placed in coordinates
+	x=0, y=0 of the 2D projection (left overhead corner).
+
+
+
+
+* WORK WITH TEXT AND IMAGE-FONTS:
+
+LoadImageFont% (filename$, flags%=FI_SMOOTHFONT)
+	Loads image-font from the text file with description of the font. Font can be drawn with
+	smoothing (by default), flag is equal to FI_SMOOTHFONT, or without smoothing,
+	when flag is equal to zero. The text file with description of the font looks like this:
+
+		;obligatory parameters
+
+		AnimTexture = Font.png	- file of animated texture of the font
+		AnimTextureFlags = 2	- flag of animated texture
+		FrameWidth = 32		- frame width of animated texture
+		FrameHeight = 32	- frame height of animated texture
+		FrameCount = 256	- count of frames in texture
+
+		;non-obligatory parameters		
+
+		Width = 27		- width of all the characters (is used, if the width of every symbol is not set or is equal to zero)
+		Height = 28		- height of all the characters		
+		FirstChar = 0		- code of the first character in image-font
+		Kerning = -2		- distance between characters
+
+		32 = 14			- width of character with code 32 (space)
+		33 = 7			- width of character with code 33 and etc.
+		34 = 10
+		35 = 16
+		36 = 14
+		...
+
+	If prosedure returns 0, then any of obligatory parameters were not set or
+	loading of texture of the font was not succeeded.
+
+
+FreeImageFont% (font%)
+	Deletes a font, freeing memory. Texture, from what the font was created, will be deleted automatically!
+
+
+SetImageFont% (font%)
+	Sets the font which will be used in output of the text. First loaded font
+	will be automatically set.
+
+
+DrawText% (text$, x%, y%, centerX%=0, centerY%=0, maxWidth%=10000)
+	Draws set text in needed coordinates X and Y. Also you can set automatically
+	centring od text on axes. The parameter maxWidth% enables to limit length of a line up to the set quantity of pixels.
+
+
+DrawTextRect% (txt$, x%, y%, width%, height%, centerX%=0, centerY%=0, lineSpacing%=0)
+	Command draws formatted text, which is entered in a rectangle
+	with coordinates x% and y% and size, which is set in parameters width and height.
+	A text can be horizontally equalized:
+		centerX = 0	- on left edge (is used by default)
+		centerX = 1	- on center
+		centerX = 2	- on right edge
+		Also you can use автоматический transfer of words and long lines,
+		for this the parameter of centerX is needed to add 4.
+	A text can be vertically equalized:
+		centerY = 0	- on top edge (is used by default)
+		centerY = 1	- on center
+		centerY = 2	- on bottom edge
+	You can sed distation between the lines by parameter lineSpacing.
+	Returns height of drawn line or zero, if the line was not drawn (in eample, line is empty).
+
+
+TextRectCount%()
+	Function returns quantity of lines of the formatted text after drawing by command DrawTextRect.
+
+
+TextRectMaxWidth%()
+	Function returns the maximal width of the formatted text after drawing by command DrawTextRect.
+
+
+TextRectWidth%(StringNumber%)
+	Function returns width of a line of the formatted text after drawing by command DrawTextRect.
+	Number of a line is set through parameter StringNumber. If number of a line is less than zero
+	or more quantity of lines the width of last line will be returned.
+
+
+StringWidthEx% (text$, maxWidth%=10000)
+	Returns the width of line taking into account the before set font.
+	The parameter maxWidth% enables to limit length of a line up to the set quantity of pixels.
+
+
+StringHeightEx% (text$)
+	Returns the height of line taking into account the before set font
+
+
+GetFontProperty% (font%)
+	Returns all of properties of font, passed to the function.
+	Available properties:
+		GetFontProperty MyFont
+		MyFontWidth		= FI_FontProperty\Width			- Width of characters
+		MyFontHeight		= FI_FontProperty\Height		- Height of characters
+		MyFontFirstChar		= FI_FontProperty\FirstChar		- Code of the first character is the font
+		MyFontImage		= FI_FontProperty\Image			- Picture of the font
+		MyFontFrameWidth	= FI_FontProperty\FrameWidth		- Width of image of character
+		MyFontFrameHeight	= FI_FontProperty\FrameHeight		- Height of image of character
+		MyFontFrameCount	= FI_FontProperty\FrameCount		- Count of characters (images of character) in the font
+		MyFontKerning		= FI_FontProperty\Kerning		- Distantion between the characters
+		MyFontChar		= FI_FontProperty\Chars[char_code%]	- Width of the symbol with code from 0 to 255
+
+
+
+
+* FUNCTIONS OF VERIFICATION OF FINDING POINT IN PRIMITIVES:
+
+
+TestRect% (xPoint%, yPoint%, xRect%, yRect%, WidthRect%, HeightRect%, Local%)
+	Verification of finding point with coordinates xPoint%, yPoint% in a rectangle,
+	placed in coordinates xRect%, yRect% and which has width WidthRect%
+	and height HeightRect%. Parameter Local% is used ( is equal to 1 ), if it is needed
+	to verificate point in local system of coordinates, by default is equal to zero.
+
+	Verification takes into account all of transformations, which were set by functions: SetRotation,
+	SetScale, SetTransform, SetOrigin, SetHandle. Also if verification
+	is conducted in global system of coordinates ( Local%=0 ), then
+	all transformations of projection, which were set by commands SetProjRotation,
+	Set ProjScale, SetProjTransform, SetProjOrigin, SetProjHandle, MidHandleProj are taken into account.
+
+	Result of function is equal to 1, if a point appeared into a rectangle,
+	else the result is equal to zero.
+
+	Additional results of function,if it is necessary, can be got
+	throught the global variable FI_Test as follows:
+		result		= FI_Test\Result	- result of function's work
+		projectedX 	= FI_Test\ProjectedX	- X coordinate of point in projection (local coordinate system)
+		projectedY 	= FI_Test\ProjectedY	- Y coordinate of point in projection (local coordinate system)
+		rectX 		= FI_Test\RectX		- X coordinate of point in system of coordinates of primitive
+		rectY		= FI_Test\RectY		- Y coordinate of point in system of coordinates of primitive
+		rectU		= FI_Test\RectU		- U coordinate of point in system of coordinates of primitive, analog of RectX, is equal RectX divided by Width of primitive
+		rectV		= FI_Test\RectV		- U coordinate of point in system of coordinates of primitive, analog of RectY, is equal RectY divided by Height of primitive
+		textureX	= FI_Test\TextureX	- X on the texture of picture, is equal to RectU * Width of texture (if a not picture participated in verification, equal to zero)
+		textureY	= FI_Test\TextureY	- Y on the texture of picture, is equal to RectV * Height of texture (if a not picture participated in verification, equal to zero)
+		texture		= FI_Test\Texture	- Texture of picture, which participated in verification (if a not picture participated in verification, equal to zero)
+
+	See also example of using FastImage_Example_TestObjects.bb
+
+
+TestOval% (xPoint%, yPoint%, xOval%, yOval%, WidthOval%, HeightOval%, Local%)
+	Verification of finding point with coordinates xPoint%, yPoint% in oval (or round),
+	placed in coordinates xOval%, yOval% and which has width WidthOval%
+	and height HeightOval%. Parameter Local% is used ( is equal to 1 ), if it is needed
+	to verificate point in local system of coordinates, by default is equal to zero.
+
+	For more detailed information see description of function TestRect.
+	See also example of using FastImage_Example_TestObjects.bb
+
+
+TestImage% (xPoint%, yPoint%, xImage%, yImage%, Image%, alphaLevel%, Frame%, Local%)
+	Verification of finding point with coordinates xPoint%, yPoint% in picture Image%,
+	placed in coordinates xImage%, yImage%. Parameter alphaLevel is used
+	for verification wit taking into account transparency of the picture, can be equal to values from 0 to 255.
+	By default alphaLevel% is equal to zero and verification for transparency is not made.
+	At checking for transparency (value of alphaLevel% >0 ) function is executed some slower
+	because there is reading from the buffer of texture of picture. Parameter Local%
+	is used ( is equal to 1 ), if it is needed to verificate point in local system of coordinates,
+	by default is equal to zero.
+
+	Verification takes into account all of transformations, which were set by functions: SetRotation,
+	SetScale, SetTransform, SetOrigin, SetHandle. Also if verification
+	is conducted in global system of coordinates ( Local%=0 ), then
+	all transformations of projection, which were set by commands SetProjRotation,
+	Set ProjScale, SetProjTransform, SetProjOrigin, SetProjHandle, MidHandleProj, are taken into account.
+
+	Result of function is equal to 1, if a point appeared into a rectangle,
+	else the result is equal to zero. If alphaLevel% was set, then result
+	will be equal to 1 only if point of the picture is not transparent.
+
+	Additional results of function,if it is necessary, can be got
+	throught the global variable FI_Test, for more detailed information see description of function TestRect.
+
+	See also example of using FastImage_Example_TestObjects.bb
+
+
+TestRendered% (xPoint%, yPoint%, alphaLevel%, Local%)
+	Verification of finding point with coordinates xPoint%, yPoint% in primitive, which
+	has already been drawn before using this command.
+
+	Attention! Function works ONLY after using following draw commands:
+		DrawImageEx, DrawImageRectEx, DrawImagePart, DrawRect, DrawRectSimple,
+		DrawOval (verificates only rectangle, in which the oval was entered).
+
+	Parameter alphaLevel is used ONLY for verification of picture with taking into account transparency,
+	can be equal to values from 0 to 255. By default alphaLevel% is equal to zero and verification
+	for transparency is not made. At checking for transparency (value of alphaLevel% >0 ) function is executed some slower
+	because there is reading from the buffer of texture of picture. Parameter Local%
+	is used ( is equal to 1 ), if it is needed to verificate point in local system of coordinates,
+	by default is equal to zero.
+
+	Verification takes into account all of transformations, which were set by functions:
+	SetRotation, SetScale, SetTransform, SetOrigin, SetHandle. Also if verification
+	is conducted in global system of coordinates ( Local%=0 ), then
+	all transformations of projection, which were set by commands SetProjRotation,
+	Set ProjScale, SetProjTransform, SetProjOrigin, SetProjHandle, MidHandleProj, are taken into account.
+
+	Result of function is equal to 1, if a point appeared into a rectangle,
+	else the result is equal to zero. If alphaLevel% was set, then result
+	will be equal to 1 only if point of the picture is not transparent.
+
+	Additional results of function,if it is necessary, can be got
+	throught the global variable FI_Test, for more detailed information see description of function TestRect.
+
+	See also example of using FastImage_Example_TestObjects.bb
+
+
+
+
+-----------------------
+
+  Translation of help file into English by Dmitry Maslov aka ABTOMAT.

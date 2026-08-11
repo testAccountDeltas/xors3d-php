@@ -1,0 +1,216 @@
+<?php
+/**
+ * Code generator: turns the Xors3d C++ header into static, typed PHP classes.
+ *
+ * Run ONCE (or whenever the SDK changes):
+ *     ..\phpx86\php.exe bin\generate.php
+ *
+ * Output (checked-in, no runtime header parsing anymore):
+ *     src/Ffi/Engine.php      - typed method per native function + binding meta
+ *     src/Ffi/Constants.php   - every engine constant as a class constant
+ *
+ * This replaces the previous runtime header parser: parsing now happens at
+ * build time, and the application boots from plain PHP classes.
+ */
+
+$root      = dirname(__DIR__);
+$sdkHeader = dirname($root) . '\\Xors3dIndie(withSamples)_750\\headers\\CPP\\inc\\xors3d.h';
+$outDir    = $root . '\\src\\Ffi';
+
+if (!is_file($sdkHeader)) {
+    fwrite(STDERR, "Header not found: $sdkHeader\n");
+    exit(1);
+}
+@mkdir($outDir, 0777, true);
+
+$src   = file_get_contents($sdkHeader);
+$lines = preg_split('/\r\n|\r|\n/', $src);
+
+/* ---------------------------------------------------------------- constants */
+$constants = [];
+$pending   = [];
+foreach ($lines as $line) {
+    if (preg_match('/^\s*const\s+int\s+(\w+)\s*=\s*([^;]+);/', $line, $m)) {
+        $name = $m[1];
+        $val  = trim($m[2]);
+        if (preg_match('/^-?\d+$/', $val)) {
+            $constants[$name] = (int) $val;
+        } else {
+            $pending[$name] = $val;
+        }
+    }
+}
+// resolve aliases (KEY_ENTER = KEY_RETURN, ...)
+do {
+    $changed = false;
+    foreach ($pending as $name => $ref) {
+        if (isset($constants[$ref])) {
+            $constants[$name] = $constants[$ref];
+            unset($pending[$name]);
+            $changed = true;
+        }
+    }
+} while ($pending && $changed);
+
+/* ---------------------------------------------------------------- functions */
+$mapRet = static function (string $t): array {
+    $t = preg_replace('/\s+/', ' ', trim($t));
+    return match ($t) {
+        'void'         => ['c' => 'void',         'php' => 'void',   'str' => false],
+        'float'        => ['c' => 'float',        'php' => 'float',  'str' => false],
+        'DWORD'        => ['c' => 'unsigned int', 'php' => 'int',    'str' => false],
+        'const char *' => ['c' => 'const char*',  'php' => 'string', 'str' => true],
+        default        => ['c' => 'int',          'php' => 'int',    'str' => false],
+    };
+};
+$mapArg = static function (string $decl): string {
+    $d = strtolower($decl);
+    if (str_contains($d, 'char'))  { return 'str'; }
+    if (str_contains($d, 'float')) { return 'float'; }
+    return 'int';
+};
+
+$functions = [];
+foreach ($lines as $line) {
+    if (!preg_match(
+        '/X3DDECL\s+(const\s+char\s*\*|Handle|DWORD|void|int|float)\s+X3DCALL\s+(\w+)\s*\((.*)\)\s*;/',
+        $line, $m
+    )) {
+        continue;
+    }
+    $ret     = $mapRet($m[1]);
+    $name    = $m[2];
+    $argsRaw = trim($m[3]);
+
+    $params = [];
+    if ($argsRaw !== '' && strtolower($argsRaw) !== 'void') {
+        foreach (array_map('trim', explode(',', $argsRaw)) as $i => $arg) {
+            $default = null;
+            if (preg_match('/=\s*(.+)$/', $arg, $d)) {
+                $default = trim($d[1]);
+                $arg = trim(preg_replace('/=.*$/', '', $arg));
+            }
+            $type = $mapArg($arg);
+            // last identifier token is the parameter name
+            preg_match('/(\w+)\s*$/', $arg, $nm);
+            $pname = $nm[1] ?? ('arg' . $i);
+            if ($pname === 'this' || $pname === '') { $pname = 'arg' . $i; }
+            $params[] = ['type' => $type, 'name' => $pname, 'default' => $default];
+        }
+    }
+    $functions[$name] = ['ret' => $ret, 'params' => $params];
+}
+
+/* --------------------------------------------------- default literal helper */
+$phpDefault = static function (array $p) use ($constants): string {
+    $t = $p['type'];
+    $d = $p['default'];
+    if ($t === 'str') {
+        return "''"; // the header only ever uses "" for string defaults
+    }
+    $low = strtolower((string) $d);
+    if ($low === 'null' || $low === 'false') { $v = 0; }
+    elseif ($low === 'true')                 { $v = 1; }
+    elseif (preg_match('/^-?\d+(\.\d+)?f?$/i', (string) $d)) {
+        $v = str_contains($d, '.') ? (float) rtrim($d, 'fF') : (int) $d;
+    } elseif (isset($constants[$d])) {
+        $v = $constants[$d];       // identifier default, e.g. KEY_RETURN
+    } else {
+        $v = 0;
+    }
+    if ($t === 'float') {
+        $f = (float) $v;
+        return (floor($f) === $f) ? number_format($f, 1, '.', '') : (string) $f;
+    }
+    return (string) (int) $v;
+};
+
+$phpType = static fn (string $t): string => match ($t) {
+    'str'   => 'string',
+    'float' => 'float',
+    default => 'int',
+};
+
+/* ----------------------------------------------------- emit Constants.php */
+$c  = "<?php\n\n";
+$c .= "declare(strict_types=1);\n\n";
+$c .= "namespace Xors3D\\Ffi;\n\n";
+$c .= "/**\n * All Xors3d engine constants (KEY_*, LIGHT_*, TF_* ...).\n";
+$c .= " * GENERATED by bin/generate.php - do not edit by hand.\n */\n";
+$c .= "final class Constants\n{\n";
+foreach ($constants as $name => $value) {
+    $c .= "    public const {$name} = {$value};\n";
+}
+$c .= "}\n";
+file_put_contents($outDir . '\\Constants.php', $c);
+
+/* -------------------------------------------------------- emit Engine.php */
+$typedefs = [];
+$meta     = [];
+$methods  = [];
+
+foreach ($functions as $name => $f) {
+    $ret   = $f['ret'];
+    $cArgs = [];
+    foreach ($f['params'] as $p) {
+        $cArgs[] = match ($p['type']) {
+            'str'   => 'const char*',
+            'float' => 'float',
+            default => 'int',
+        };
+    }
+    $nArgs      = count($cArgs);
+    $tp         = 'fp_' . $name;
+    $sig        = $nArgs ? implode(', ', $cArgs) : 'void';
+    $typedefs[] = "typedef {$ret['c']} (__stdcall *{$tp})({$sig});";
+
+    // stdcall decoration: _name@<bytes>, every arg is 4 bytes here.
+    $meta[$name] = ['sym' => '_' . $name . '@' . ($nArgs * 4), 'str' => $ret['str']];
+
+    // build the typed PHP method
+    $sigParts = [];
+    $callArgs = [];
+    foreach ($f['params'] as $p) {
+        $decl = $phpType($p['type']) . ' $' . $p['name'];
+        if ($p['default'] !== null) {
+            $decl .= ' = ' . $phpDefault($p);
+        }
+        $sigParts[] = $decl;
+        $callArgs[] = '$' . $p['name'];
+    }
+    $paramList = implode(', ', $sigParts);
+    $callList  = $callArgs ? ('[' . implode(', ', $callArgs) . ']') : '[]';
+
+    $body = $ret['php'] === 'void'
+        ? "        \$this->invoke('{$name}', {$callList});\n"
+        : "        return \$this->invoke('{$name}', {$callList});\n";
+
+    $methods[] =
+        "    public function {$name}({$paramList}): {$ret['php']}\n" .
+        "    {\n{$body}    }\n";
+}
+
+$typedefStr = implode("\n", $typedefs);
+$metaExport = var_export($meta, true);
+
+$e  = "<?php\n\n";
+$e .= "declare(strict_types=1);\n\n";
+$e .= "namespace Xors3D\\Ffi;\n\n";
+$e .= "/**\n * Typed FFI binding to Xors3d.dll - one PHP method per native function.\n";
+$e .= " * GENERATED by bin/generate.php - do not edit by hand.\n";
+$e .= " *\n * Extends NativeLibrary, which owns the low-level FFI plumbing\n";
+$e .= " * (LoadLibrary + GetProcAddress + typed FFI::cast of __stdcall exports).\n */\n";
+$e .= "final class Engine extends NativeLibrary\n{\n";
+$e .= "    /** C typedefs for every native function pointer. */\n";
+$e .= "    protected const TYPEDEFS = <<<'CDEF'\n{$typedefStr}\nCDEF;\n\n";
+$e .= "    /** Per-function binding metadata: decorated symbol + string-return flag. */\n";
+$e .= "    protected const FUNCS = {$metaExport};\n\n";
+$e .= implode("\n", $methods);
+$e .= "}\n";
+file_put_contents($outDir . '\\Engine.php', $e);
+
+printf(
+    "Generated:\n  %s  (%d constants)\n  %s  (%d functions)\n",
+    $outDir . '\\Constants.php', count($constants),
+    $outDir . '\\Engine.php', count($functions)
+);

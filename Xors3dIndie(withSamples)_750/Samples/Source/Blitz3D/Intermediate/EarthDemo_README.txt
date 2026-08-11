@@ -1,0 +1,1 @@
+Due to the large size of the media, Earth Demo is available for manual download from http://updates.xors3d.com/public/Earth.zip

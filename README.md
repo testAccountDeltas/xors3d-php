@@ -1,0 +1,109 @@
+# Xors3d + PHP (FFI)
+
+Полноценная работа со старым 3D-движком **Xors3d Indie 7.50** прямо из **PHP 8.5**
+через **FFI** — без единой строчки C/C++. В комплекте:
+
+- **ООП-каркас** (PSR-4 автолоадер, роутер, контроллеры, DI);
+- **типизированный биндинг** ко всем ~1034 функциям движка и 427 константам
+  (сгенерирован из C-заголовка, парсинга в рантайме нет);
+- **порт всех 32 официальных примеров** SDK на PHP;
+- собственная **воксельная игра «Craft»** в духе Minecraft (меню, настройки,
+  генерация мира, биомы, вода, деревья, ходьба с гравитацией, разрушение и
+  стройка, инвентарь, звук, сохранение мира).
+
+Репозиторий **самодостаточный**: в него включены 32-битная сборка PHP
+(`phpx86/`), сам движок и его DLL, а также SDK с медиа — то есть после клона
+всё запускается без установки чего-либо.
+
+## Скриншоты
+
+Игра «Craft» (маршрут `minecraft`):
+
+![Главное меню](docs/screenshots/menu.png)
+
+![Игровой процесс](docs/screenshots/gameplay.png)
+
+![Меню настроек](docs/screenshots/settings.png)
+
+## Быстрый старт
+
+Windows, из корня репозитория:
+
+```bat
+run.bat minecraft     :: воксельная игра «Craft»
+run.bat               :: меню-лаунчер всех демок
+run.bat simple        :: конкретная демка
+run.bat info          :: информация о движке (без окна)
+```
+
+`run.bat` запускает всё бандлированным 32-битным PHP (`phpx86/php.exe`),
+в котором уже включён FFI (`phpx86/php.ini`).
+
+## Игра «Craft»
+
+- **Меню**: Play / New World / Save World / Load World / Settings / Quit
+  (стрелки + Enter), с живым вращающимся миром на фоне.
+- **Настройки** (сохраняются в `xors3d-php/craft-settings.json`):
+  чувствительность мыши, инверсия Y, FOV, туман, день/ночь, громкость звука
+  (вживую); разрешение и vsync (при перезапуске); размер мира, деревья, вода
+  (при New World).
+- **Мир**: процедурный рельеф, биомы (трава / песчаные пляжи у воды / снежные
+  шапки), деревья, анимированная полупрозрачная вода.
+- **Управление**: `WASD` + мышь; `F` — ходьба/полёт (в ходьбе гравитация,
+  коллизия, прыжок `Space`); `ЛКМ` — ломать, `ПКМ` — ставить; `1–9` или колесо
+  мыши — выбор блока (9 типов); `Esc` — в меню.
+- **Звук**: ломание, установка, шаги и зацикленный эмбиент-ветер
+  (синтезируются `xors3d-php/bin/gen_sounds.php`).
+- **Save/Load** построенного мира в `xors3d-php/craft-world.json`.
+- Текстуры — настоящие 16×16 тайлы Minecraft в `xors3d-php/assets/blocks/`.
+
+## Структура
+
+```
+.
+├─ run.bat                    Лаунчер (32-бит PHP + фронт-контроллер)
+├─ phpx86/                    Бандлированный 32-битный PHP + php.ini (FFI on)
+├─ Xors3dIndie(withSamples)_750/   SDK движка: dlls, headers, samples, media
+├─ Default-assets/            Текстуры Minecraft (исходные, для ассетов)
+├─ docs/screenshots/          Скриншоты для README
+└─ xors3d-php/                PHP-проект
+   ├─ app.php                 Точка входа (фронт-контроллер)
+   ├─ routes.php              Авто-дискавери контроллеров -> маршруты
+   ├─ bin/generate.php        Кодоген: xors3d.h -> src/Ffi/*.php
+   ├─ bin/gen_sounds.php      Синтез WAV-звуков
+   ├─ assets/                 blocks/ (текстуры) + sounds/ (WAV)
+   └─ src/
+      ├─ autoload.php         PSR-4 автолоадер (Xors3D\)
+      ├─ Core/                Application, Router, Controller, Config
+      ├─ Ffi/                 NativeLibrary + ГЕНЕРИРУЕМЫЕ Engine.php / Constants.php
+      ├─ Scene/               Entity, Camera, Cube, Texture, MouseLookCamera, Skybox…
+      └─ Controllers/         По контроллеру на демку (32 примера + info + minecraft)
+```
+
+## Как это работает
+
+Xors3d.dll экспортирует плоские C-функции с соглашением `__stdcall`. На 32-битной
+Windows их имена декорированы как `_имя@N`. У встроенной авто-декорации PHP FFI
+есть баг (падение на функциях без аргументов), поэтому символы резолвятся вручную
+через `GetProcAddress` по точному имени, а адрес приводится к типизированному
+указателю через `FFI::cast()` — это штатное использование FFI. Требуется
+**32-битный** PHP, так как все DLL движка — x86.
+
+Биндинг генерируется один раз из `headers/CPP/inc/xors3d.h`:
+
+```bat
+phpx86\php.exe xors3d-php\bin\generate.php
+```
+
+## Демки (порт Samples/Source/C++)
+
+Все 32 примера SDK доступны как маршруты `run.bat <имя>`:
+
+`animtex army blank bloom bump butterfly clipplane cubemap dof editor forest fx
+glass instancing instancing2 meshesintersect pick pointing psystem px r2i r2t
+rwpixel shadows simple skinning splatting stretchbb surface sysinfo terrain water`
+
+## Требования
+
+- Windows;
+- всё остальное включено в репозиторий (PHP, движок, DLL, медиа).
