@@ -123,19 +123,18 @@ final class MinecraftController extends Controller
     /** @var array<int,int> */ private array $tex = [];
     private int $waterTpl = 0;
     private int $waterTex = 0;
-    /** @var array<string,int> */ private array $cell = [];
-    /** @var array<string,int> */ private array $cellType = [];
-    /** @var array<int,string> */ private array $entToCell = [];
     /** @var array<int,bool> water entity handle => true */ private array $water = [];
     /** @var array<int,array<int,int>> */ private array $height = [];
 
     // streaming chunks + edit overlay (generative world)
-    /** @var array<string,int[]> "cx,cz" => loaded entity handles */ private array $chunk = [];
-    /** @var array<int,string> entity => chunk key */ private array $entChunk = [];
+    /** @var array<string,int[]> "cx,cz" => entity handles (mesh + water) */ private array $chunk = [];
     /** @var array<string,bool> loaded chunk keys */ private array $loaded = [];
     /** @var array<string,int> "x,y,z" => type (0 = removed): tree + player edits over generated world */ private array $edits = [];
     /** @var array<string,array<string,int>> chunk key => its edits */ private array $editsByChunk = [];
     /** @var array<string,bool> chunks whose trees have been generated */ private array $treeGen = [];
+    /** @var array<int,int> block type => brush (textured) for chunk meshes */ private array $brush = [];
+    /** @var array<string,int> chunk key => merged mesh handle */ private array $chunkMesh = [];
+    /** @var array<int,string> mesh handle => chunk key (for picking) */ private array $meshCk = [];
     private int $streamCX = PHP_INT_MAX;
     private int $streamCZ = PHP_INT_MAX;
     private float $originX = 0.0;   // player home (world units), for mobs/backdrop
@@ -477,6 +476,11 @@ final class MinecraftController extends Controller
             if ($id === 10) { $e->xEntityAlpha($cube, 0.7); } // glass: translucent
             $e->xHideEntity($cube);
             $this->template[$id] = $cube;
+
+            // brush per type for the merged chunk-mesh surfaces
+            $b = $e->xCreateBrush();
+            $e->xBrushTexture($b, $texture);
+            $this->brush[$id] = $b;
         }
 
         // animated translucent water
@@ -515,10 +519,10 @@ final class MinecraftController extends Controller
     {
         $e = $this->e;
         $this->clearMobs();
-        foreach ($this->cell as $h) { $e->xFreeEntity($h); }
-        foreach (array_keys($this->water) as $h) { $e->xFreeEntity($h); }
-        $this->cell = $this->cellType = $this->entToCell = $this->water = [];
-        $this->chunk = $this->entChunk = $this->loaded = [];
+        foreach ($this->chunk as $list) {
+            foreach ($list as $h) { $e->xFreeEntity($h); }
+        }
+        $this->chunk = $this->chunkMesh = $this->meshCk = $this->water = $this->loaded = [];
         $this->streamCX = PHP_INT_MAX;
         $this->streamCZ = PHP_INT_MAX;
     }
@@ -621,7 +625,7 @@ final class MinecraftController extends Controller
                 $wz = $this->originZ + mt_rand(-30, 30) * self::BLOCK;
                 $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
                 $gt = $this->groundTop($bx, $bz);
-                $onTree = isset($this->cell["$bx," . ($gt + 1) . ",$bz"]); // avoid trees
+                $onTree = $this->solidType($bx, $gt + 1, $bz) > 0; // avoid trees
             } while (($this->isWaterAt($wx, $wz) || $onTree) && ++$tries < 12);
             $this->mobs[] = $this->buildSheep($wx, $wz);
         }
@@ -655,14 +659,12 @@ final class MinecraftController extends Controller
                 'dx' => 0.0, 'dz' => 0.0, 'yaw' => 0.0, 'timer' => 0];
     }
 
-    /** Topmost solid block cell in a column (handles built-up / dug terrain). */
+    /** Topmost solid block cell in a column (from the data model). */
     private function groundTop(int $bx, int $bz): int
     {
-        $start = $this->heightAt($bx, $bz) + 4;
+        $start = $this->heightAt($bx, $bz) + 6; // account for trees / built towers
         for ($y = $start; $y >= 0; $y--) {
-            if (isset($this->cell["$bx,$y,$bz"])) {
-                return $y;
-            }
+            if ($this->solidType($bx, $y, $bz) > 0) { return $y; }
         }
         return $this->heightAt($bx, $bz);
     }
@@ -675,10 +677,10 @@ final class MinecraftController extends Controller
     private function mobBlocked(int $bx, int $bz, int $curG): bool
     {
         $gt = $this->groundTop($bx, $bz);
-        if ($gt < 0) { return true; }                 // void / out of bounds
-        if ($gt - $curG > 1) { return true; }         // cliff too tall to climb
-        if (isset($this->cell["$bx," . ($gt + 1) . ",$bz"])) { return true; } // obstacle at body
-        if (isset($this->cell["$bx," . ($gt + 2) . ",$bz"])) { return true; }
+        if ($gt < 0) { return true; }
+        if ($gt - $curG > 1) { return true; }
+        if ($this->solidType($bx, $gt + 1, $bz) > 0) { return true; }
+        if ($this->solidType($bx, $gt + 2, $bz) > 0) { return true; }
         return false;
     }
 
@@ -853,80 +855,118 @@ final class MinecraftController extends Controller
     // ============================================================ world (ops)
 
     private function key(int $x, int $y, int $z): string { return "$x,$y,$z"; }
-
-    private function spawn(Engine $e, int $x, int $y, int $z, int $type): void
-    {
-        $k = $this->key($x, $y, $z);
-        if (isset($this->cell[$k])) { return; }
-        $block = $e->xCopyEntity($this->template[$type]);
-        $e->xPositionEntity($block, $x * self::BLOCK, $y * self::BLOCK, $z * self::BLOCK);
-        $e->xEntityPickMode($block, 2);
-        $this->cell[$k] = $block;
-        $this->cellType[$k] = $type;
-        $this->entToCell[$block] = $k;
-        $this->addToChunk($block, $x, $z);
-    }
-
-    private function spawnWater(Engine $e, int $x, int $y, int $z): void
-    {
-        $w = $e->xCopyEntity($this->waterTpl);
-        $e->xPositionEntity($w, $x * self::BLOCK, $y * self::BLOCK, $z * self::BLOCK);
-        $this->water[$w] = true;
-        $this->addToChunk($w, $x, $z);
-    }
-
-    private function addToChunk(int $handle, int $bx, int $bz): void
-    {
-        $ck = $this->cdiv($bx) . "," . $this->cdiv($bz);
-        $this->chunk[$ck][] = $handle;
-        $this->entChunk[$handle] = $ck;
-    }
-
-    private function removeFromChunk(int $handle): void
-    {
-        $ck = $this->entChunk[$handle] ?? null;
-        if ($ck === null) { return; }
-        $i = array_search($handle, $this->chunk[$ck], true);
-        if ($i !== false) { array_splice($this->chunk[$ck], $i, 1); }
-        unset($this->entChunk[$handle]);
-    }
-
-    // --------------------------------------------------- streaming chunk loader
-
     private function cdiv(int $v): int { return (int) floor($v / self::CH); }
 
-    /** Instantiate the visible shell of one chunk from data + edits. */
+    /** Final block type at a cell from the data model (edits over generation). 0 = air. */
+    private function solidType(int $x, int $y, int $z): int
+    {
+        $k = "$x,$y,$z";
+        if (array_key_exists($k, $this->edits)) { return $this->edits[$k]; }
+        if ($y >= 0 && $y <= $this->heightAt($x, $z)) { return $this->groundType($x, $y, $z); }
+        return 0;
+    }
+
+    private function spawnWater(int $ck0x, int $x, int $z, array &$list): void
+    {
+        $e = $this->e;
+        $w = $e->xCopyEntity($this->waterTpl);
+        $e->xPositionEntity($w, $x * self::BLOCK, self::SEA * self::BLOCK, $z * self::BLOCK);
+        $this->water[$w] = true;
+        $list[] = $w;
+    }
+
+    // ------------------------------------------------ merged chunk meshing
+
+    /** Cube face corner offsets (unit) + neighbour direction, per face. */
+    private const FACES = [
+        [[1, 0, 0],  [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]]],   // +X
+        [[-1, 0, 0], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]]], // -X
+        [[0, 1, 0],  [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]]],   // +Y
+        [[0, -1, 0], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]]], // -Y
+        [[0, 0, 1],  [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]],   // +Z
+        [[0, 0, -1], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]]], // -Z
+    ];
+
+    /** Add the exposed faces of one solid cell to the per-type surfaces. */
+    private function emitCell(int $mesh, array &$surf, int $x, int $y, int $z, int $type): void
+    {
+        $e = $this->e; $B = self::BLOCK; $h = $B / 2;
+        $cx = $x * $B; $cy = $y * $B; $cz = $z * $B;
+        foreach (self::FACES as [$n, $corners]) {
+            if ($this->solidType($x + $n[0], $y + $n[1], $z + $n[2]) > 0) { continue; } // hidden face
+            if (!isset($surf[$type])) {
+                $surf[$type] = $e->xCreateSurface($mesh, $this->brush[$type]);
+            }
+            $s = $surf[$type];
+            $v = [];
+            $uv = [[0, 0], [1, 0], [1, 1], [0, 1]];
+            foreach ($corners as $i => $c) {
+                $v[] = $e->xAddVertex($s, $cx + $c[0] * $h, $cy + $c[1] * $h, $cz + $c[2] * $h, $uv[$i][0], $uv[$i][1]);
+            }
+            $e->xAddTriangle($s, $v[0], $v[1], $v[2]);
+            $e->xAddTriangle($s, $v[0], $v[2], $v[3]);
+        }
+    }
+
+    /** Build (or rebuild) one chunk as a single merged, face-culled mesh. */
+    private function buildChunkMesh(int $cx, int $cz): void
+    {
+        $e = $this->e;
+        $ck = "$cx,$cz";
+
+        // free previous entities of this chunk (rebuild case)
+        foreach ($this->chunk[$ck] ?? [] as $h) {
+            unset($this->meshCk[$h], $this->water[$h]);
+            $e->xFreeEntity($h);
+        }
+        $this->chunk[$ck] = [];
+
+        if (!isset($this->treeGen[$ck])) { $this->treeGen[$ck] = true; $this->genTrees($cx, $cz); }
+
+        $mesh = $e->xCreateMesh();
+        $surf = [];
+        $x0 = $cx * self::CH; $z0 = $cz * self::CH;
+        $waterOn = (int) $this->settings['water'];
+        $list = [];
+
+        for ($x = $x0; $x < $x0 + self::CH; $x++) {
+            for ($z = $z0; $z < $z0 + self::CH; $z++) {
+                $top = $this->heightAt($x, $z);
+                $yMax = $top;
+                // include any stacked edits above the terrain (trees / towers)
+                for ($y = 0; $y <= $yMax; $y++) {
+                    $t = $this->solidType($x, $y, $z);
+                    if ($t > 0) { $this->emitCell($mesh, $surf, $x, $y, $z, $t); }
+                }
+                if ($waterOn && $top < self::SEA) { $this->spawnWater($cx, $x, $z, $list); }
+            }
+        }
+        // edits above terrain top (trees/placed) within this chunk
+        foreach ($this->editsByChunk[$ck] ?? [] as $k => $t) {
+            if ($t <= 0) { continue; }
+            [$x, $y, $z] = array_map('intval', explode(',', $k));
+            if ($y > $this->heightAt($x, $z)) { $this->emitCell($mesh, $surf, $x, $y, $z, $t); }
+        }
+
+        $e->xUpdateNormals($mesh);
+        $e->xEntityPickMode($mesh, 2);
+
+        $this->chunkMesh[$ck] = $mesh;
+        $this->meshCk[$mesh] = $ck;
+        $this->chunk[$ck] = array_merge([$mesh], $list);
+    }
+
     private function loadChunk(int $cx, int $cz): void
     {
         $ck = "$cx,$cz";
         if (isset($this->loaded[$ck])) { return; }
         $this->loaded[$ck] = true;
-        $e = $this->e;
-        $water = (int) $this->settings['water'];
+        $this->buildChunkMesh($cx, $cz);
+    }
 
-        if (!isset($this->treeGen[$ck])) { $this->treeGen[$ck] = true; $this->genTrees($cx, $cz); }
-
-        $x0 = $cx * self::CH; $z0 = $cz * self::CH;
-        for ($x = $x0; $x < $x0 + self::CH; $x++) {
-            for ($z = $z0; $z < $z0 + self::CH; $z++) {
-                $top = $this->heightAt($x, $z);
-                for ($y = $this->exposedBottom($x, $z); $y <= $top; $y++) {
-                    $k = "$x,$y,$z";
-                    $t = $this->edits[$k] ?? $this->groundType($x, $y, $z);
-                    if ($t > 0) { $this->spawn($e, $x, $y, $z, $t); }
-                }
-                if ($water && $this->heightAt($x, $z) < self::SEA) {
-                    $this->spawnWater($e, $x, self::SEA, $z);
-                }
-            }
-        }
-        // edits above the shell (trees, player-built towers) in this chunk
-        foreach ($this->editsByChunk[$ck] ?? [] as $k => $t) {
-            if ($t > 0 && !isset($this->cell[$k])) {
-                [$x, $y, $z] = array_map('intval', explode(',', $k));
-                $this->spawn($e, $x, $y, $z, $t);
-            }
-        }
+    private function rebuildChunk(int $cx, int $cz): void
+    {
+        if (isset($this->loaded["$cx,$cz"])) { $this->buildChunkMesh($cx, $cz); }
     }
 
     private function unloadChunk(int $cx, int $cz): void
@@ -935,12 +975,10 @@ final class MinecraftController extends Controller
         if (!isset($this->loaded[$ck])) { return; }
         $e = $this->e;
         foreach ($this->chunk[$ck] ?? [] as $h) {
-            $key = $this->entToCell[$h] ?? null;
-            if ($key !== null) { unset($this->cell[$key], $this->cellType[$key]); }
-            unset($this->entToCell[$h], $this->water[$h], $this->entChunk[$h]);
+            unset($this->meshCk[$h], $this->water[$h]);
             $e->xFreeEntity($h);
         }
-        unset($this->chunk[$ck], $this->loaded[$ck]);
+        unset($this->chunk[$ck], $this->chunkMesh[$ck], $this->loaded[$ck]);
     }
 
     /** Load chunks within render distance of ($wx,$wz); unload the rest. */
@@ -1076,34 +1114,32 @@ final class MinecraftController extends Controller
         $e->xRenderPostEffect($this->godPoly);
     }
 
+    /** Rebuild the chunk containing (x,z) plus horizontal neighbours (border faces). */
+    private function rebuildAround(int $x, int $z): void
+    {
+        $done = [];
+        foreach ([[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] as [$dx, $dz]) {
+            $cx = $this->cdiv($x + $dx); $cz = $this->cdiv($z + $dz);
+            $ck = "$cx,$cz";
+            if (!isset($done[$ck])) { $done[$ck] = true; $this->rebuildChunk($cx, $cz); }
+        }
+    }
+
     private function destroyAt(Engine $e, int $x, int $y, int $z): void
     {
-        $k = $this->key($x, $y, $z);
-        if (!isset($this->cell[$k])) { return; }
-        $handle = $this->cell[$k];
-        $this->removeFromChunk($handle);
-        $e->xFreeEntity($handle);
-        unset($this->entToCell[$handle], $this->cell[$k], $this->cellType[$k]);
+        if ($this->solidType($x, $y, $z) <= 0) { return; }
         $this->setEdit($x, $y, $z, 0); // record removal in the data model
         $this->play($this->sndBreak);
-
-        foreach ([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as [$dx, $dy, $dz]) {
-            $nx = $x + $dx; $ny = $y + $dy; $nz = $z + $dz;
-            if ($ny < 0) { continue; }
-            $nk = $this->key($nx, $ny, $nz);
-            if (isset($this->cell[$nk]) || !isset($this->loaded[$this->cdiv($nx) . "," . $this->cdiv($nz)])) { continue; }
-            $t = $this->edits[$nk] ?? $this->groundType($nx, $ny, $nz);
-            if ($t > 0) { $this->spawn($e, $nx, $ny, $nz, $t); }
-        }
+        $this->rebuildAround($x, $z);
     }
 
     private function placeAt(Engine $e, int $x, int $y, int $z, int $type): void
     {
         if ($y < 0 || $y > self::Y_MAX) { return; }
-        if (isset($this->cell[$this->key($x, $y, $z)])) { return; }
+        if ($this->solidType($x, $y, $z) > 0) { return; }
         $this->setEdit($x, $y, $z, $type);
-        $this->spawn($e, $x, $y, $z, $type);
         $this->play($this->sndPlace);
+        $this->rebuildAround($x, $z);
     }
 
     private function faceOffset(Engine $e): array
@@ -1279,7 +1315,7 @@ final class MinecraftController extends Controller
     /** True if a solid (non-water) block occupies this voxel cell. */
     private function solidCell(int $bx, int $by, int $bz): bool
     {
-        return isset($this->cell[$this->key($bx, $by, $bz)]);
+        return $this->solidType($bx, $by, $bz) > 0;
     }
 
     private function cellOf(float $w): int
@@ -1421,15 +1457,23 @@ final class MinecraftController extends Controller
             $cy = (int) ($e->xGraphicsHeight() / 2);
             $e->xCameraPick($h, $cx, $cy);
             $picked = $e->xPickedEntity();
-            $hasTarget = $picked !== 0 && isset($this->entToCell[$picked]);
+            $hasTarget = $picked !== 0 && isset($this->meshCk[$picked]);
 
             if ($hasTarget) {
-                [$bx, $by, $bz] = array_map('intval', explode(',', $this->entToCell[$picked]));
+                // pick point + face normal -> the block cell just inside / outside the face
+                $px = $e->xPickedX(); $py = $e->xPickedY(); $pz = $e->xPickedZ();
+                [$dx, $dy, $dz] = $this->faceOffset($e);
+                $q = self::BLOCK * 0.25;
                 if ($e->xMouseHit(1)) {
+                    $bx = $this->cellOf($px - $dx * $q);
+                    $by = $this->cellOf($py - $dy * $q);
+                    $bz = $this->cellOf($pz - $dz * $q);
                     $this->destroyAt($e, $bx, $by, $bz);
                 } elseif ($e->xMouseHit(2) || $e->xMouseHit(3)) {
-                    [$dx, $dy, $dz] = $this->faceOffset($e);
-                    $this->placeAt($e, $bx + $dx, $by + $dy, $bz + $dz, $this->selectedType());
+                    $bx = $this->cellOf($px + $dx * $q);
+                    $by = $this->cellOf($py + $dy * $q);
+                    $bz = $this->cellOf($pz + $dz * $q);
+                    $this->placeAt($e, $bx, $by, $bz, $this->selectedType());
                 }
             }
 
@@ -1462,7 +1506,7 @@ final class MinecraftController extends Controller
         $e->xColor(255, 255, 0);
         $e->xText(10, 10, 'FPS: ' . $e->xGetFPS());
         $e->xColor(220, 220, 220);
-        $e->xText(10, 30, 'Blocks: ' . count($this->cell) . '   Sheep: ' . count($this->mobs));
+        $e->xText(10, 30, 'Chunks: ' . count($this->chunkMesh) . '   Sheep: ' . count($this->mobs));
         $e->xText(10, 50, 'Mode: ' . ($this->fly ? 'Fly (F)' : 'Walk (F)'));
         $e->xText(10, 70, $hasTarget ? 'LMB destroy / RMB place' : 'no target');
         $e->xText(10, 90, 'Esc: menu');
