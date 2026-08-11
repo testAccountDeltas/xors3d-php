@@ -30,9 +30,9 @@ final class MinecraftController extends Controller
 {
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
-    private const MAX_H = 11;
-    private const SNOW  = 9;
-    private const SEA   = 3;
+    private const MAX_H = 16;
+    private const SNOW  = 12;
+    private const SEA   = 4;
     private const Y_MAX = 48;
     private const BLOCK = 2.0;
     private const CH    = 8;      // chunk size (columns) for render-distance culling
@@ -126,6 +126,7 @@ final class MinecraftController extends Controller
     private int $waterTex = 0;
     /** @var array<int,bool> water entity handle => true */ private array $water = [];
     /** @var array<int,array<int,int>> */ private array $height = [];
+    /** @var array<int,array<int,float>> biome value cache (0..1) */ private array $biome = [];
 
     // streaming chunks + edit overlay (generative world)
     /** @var array<string,int[]> "cx,cz" => entity handles (mesh + water) */ private array $chunk = [];
@@ -539,6 +540,7 @@ final class MinecraftController extends Controller
         $this->editsByChunk = [];
         $this->treeGen = [];
         $this->height = [];
+        $this->biome = [];
         $this->generateData();
     }
 
@@ -555,13 +557,18 @@ final class MinecraftController extends Controller
     /** Deterministically populate a chunk's trees into the edit overlay (once). */
     private function genTrees(int $cx, int $cz): void
     {
-        $prob = 0.05 * (float) $this->settings['trees']; // per suitable column
+        $density = (float) $this->settings['trees'];
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
         for ($x = $x0; $x < $x0 + self::CH; $x++) {
             for ($z = $z0; $z < $z0 + self::CH; $z++) {
                 $h = $this->heightAt($x, $z);
                 if ($h <= self::SEA || $h >= self::SNOW) { continue; }
-                if ($this->hash3($x, 7, $z) < $prob) {
+                $b = $this->biomeVal($x, $z);
+                if ($b < 0.30)      { continue; }        // desert: no trees
+                elseif ($b < 0.55)  { $prob = 0.012; }   // plains: sparse
+                elseif ($b < 0.72)  { $prob = 0.06;  }   // forest: dense
+                else                { $prob = 0.008; }   // mountains: rare
+                if ($this->hash3($x, 7, $z) < $prob * $density) {
                     $this->plantTreeData($x, $h + 1, $z);
                 }
             }
@@ -812,12 +819,27 @@ final class MinecraftController extends Controller
         return max(0, $min);
     }
 
-    /** Procedural surface height for ANY column (cached). Works for infinite world. */
+    /** Low-frequency biome value (0..1) for a column, cached. */
+    private function biomeVal(int $x, int $z): float
+    {
+        if (isset($this->biome[$x][$z])) { return $this->biome[$x][$z]; }
+        $b = $this->fbm($x * 0.012 + 500.0, $z * 0.012 + 500.0) / 0.9375; // 0..1
+        return $this->biome[$x][$z] = $b;
+    }
+
+    /**
+     * Procedural surface height (cached). Mostly flat plains/desert for easy
+     * building; amplitude grows only in mountain biomes (high biome value).
+     */
     private function heightAt(int $x, int $z): int
     {
         if (isset($this->height[$x][$z])) { return $this->height[$x][$z]; }
-        $f = $this->fbm($x * 0.08, $z * 0.08) / 0.9375;      // 0..1
-        $h = (int) round((self::SEA - 1) + $f * (self::MAX_H - (self::SEA - 1)));
+        $b = $this->biomeVal($x, $z);
+        $mount = max(0.0, ($b - 0.72) / 0.28);      // 0 in lowlands, 1 in mountains
+        $mount = $mount * $mount;
+        $amp = 2.0 + $mount * 16.0;                  // plains ~±1, mountains tall
+        $detail = $this->fbm($x * 0.05, $z * 0.05) / 0.9375; // 0..1 local relief
+        $h = (int) round((self::SEA + 2) + ($detail - 0.5) * $amp);
         $h = max(0, min(self::MAX_H, $h));
         return $this->height[$x][$z] = $h;
     }
@@ -839,18 +861,22 @@ final class MinecraftController extends Controller
         return 3;                                     // stone
     }
 
-    /** Natural block type at a cell (before edits). 0 = air. */
+    /** Natural block type at a cell (before edits), by biome. 0 = air. */
     private function groundType(int $x, int $y, int $z): int
     {
         $h = $this->heightAt($x, $z);
         if ($y > $h || $y < 0) { return 0; }
+        $b = $this->biomeVal($x, $z);
+        $desert = $b < 0.30;
         if ($y === $h) {
-            if ($h >= self::SNOW) { return 6; }   // snow cap
-            if ($h <= self::SEA)  { return 9; }   // sandy beach
-            return 1;                             // grass
+            if ($h <= self::SEA)  { return 9; }              // beach
+            if ($desert)          { return 9; }              // desert sand
+            if ($h >= self::SNOW) { return 6; }              // snow cap
+            if ($b >= 0.85 && $h > self::SEA + 7) { return 3; } // bare mountain rock
+            return 1;                                        // grass
         }
-        if ($y >= $h - 2) { return 2; }           // dirt
-        return $this->oreAt($x, $y, $z);          // stone / ore
+        if ($y >= $h - 2) { return $desert ? 9 : 2; }        // sand / dirt
+        return $this->oreAt($x, $y, $z);                     // stone / ore
     }
 
     private function setEdit(int $x, int $y, int $z, int $type): void
@@ -1249,6 +1275,7 @@ final class MinecraftController extends Controller
         $this->clearWorld();
         $this->seed = (float) ($d['seed'] ?? 0);
         $this->height = [];
+        $this->biome = [];
         $this->edits = [];
         $this->editsByChunk = [];
         $this->treeGen = [];
