@@ -73,7 +73,7 @@ final class MinecraftController extends Controller
     private array $settings = [
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
-        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 40,
+        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 40, 'bloom' => 0,
         'worldSize' => 64, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -83,6 +83,7 @@ final class MinecraftController extends Controller
         ['key' => 'fov',         'label' => 'Field of view',     'type' => 'float', 'min' => 0.6, 'max' => 1.6, 'step' => 0.1],
         ['key' => 'fog',         'label' => 'Fog',               'type' => 'bool'],
         ['key' => 'daynight',    'label' => 'Day/night cycle',   'type' => 'bool'],
+        ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
         ['key' => 'renderDist',  'label' => 'Render distance',   'type' => 'int',  'min' => 16, 'max' => 96, 'step' => 8],
         ['key' => 'resolution',  'label' => 'Resolution',        'type' => 'res',  'note' => 'restart'],
@@ -139,6 +140,13 @@ final class MinecraftController extends Controller
     /** @var array<int,array<string,mixed>> active sheep mobs */
     private array $mobs = [];
 
+    // bloom post-effect (shader)
+    private int $bloomPoly = 0;
+    private int $bloomTexS = 0;
+    private int $bloomTexF = 0;
+    private int $bloomFX = 0;
+    private bool $bloomOK = false;
+
     // sounds
     private int $sndBreak = 0;
     private int $sndPlace = 0;
@@ -181,6 +189,7 @@ final class MinecraftController extends Controller
         $this->createHand($e, $this->camH);
         $this->pivot = $e->xCreatePivot();
         $this->loadSounds($e);
+        $this->setupBloom($e);
         $this->applySettings();
         $this->rebuildWorld();
 
@@ -775,6 +784,46 @@ final class MinecraftController extends Controller
         $this->lastPC = ''; // force a chunk-visibility refresh
     }
 
+    // =================================================================== bloom
+
+    private function setupBloom(Engine $e): void
+    {
+        $fx = $this->config->media('Shaders/Bloom.fx');
+        if (!is_file($fx)) { $this->bloomOK = false; return; }
+        $this->bloomFX = $e->xLoadFXFile($fx);
+        if (!$e->xValidateEffectTechnique($this->bloomFX, 'Diffuse')) {
+            $this->bloomOK = false;   // GPU can't run it -> silently skip
+            return;
+        }
+        $w = (int) $this->settings['width'];
+        $h = (int) $this->settings['height'];
+        $this->bloomPoly = $e->xCreatePostEffectPoly($this->camH, 1);
+        $this->bloomTexS = $e->xCreateTexture(256, 256);
+        $this->bloomTexF = $e->xCreateTexture($w, $h);
+        $e->xSetEntityEffect($this->bloomPoly, $this->bloomFX);
+        $e->xSetEffectTechnique($this->bloomPoly, 'Diffuse');
+        $e->xSetEffectMatrixSemantic($this->bloomPoly, 'MatWorldViewProj', Constants::WORLDVIEWPROJ);
+        $e->xSetEffectTexture($this->bloomPoly, 'tDiffuse', $this->bloomTexS);
+        $e->xSetEffectTexture($this->bloomPoly, 'tEmissive', $this->bloomTexF);
+        $this->bloomOK = true;
+    }
+
+    /** Bright-pass + separable blur bloom, run as a post effect over the frame. */
+    private function renderBloom(): void
+    {
+        if (!$this->bloomOK || !(int) $this->settings['bloom']) { return; }
+        $e = $this->e;
+        $w = (int) $this->settings['width'];
+        $h = (int) $this->settings['height'];
+        $e->xStretchBackBuffer($this->bloomTexS, 0, 0, 256, 256, 0);
+        $e->xStretchBackBuffer($this->bloomTexF, 0, 0, $w, $h, 0);
+        $e->xSetEffectTechnique($this->bloomPoly, 'Diffuse');  $e->xRenderPostEffect($this->bloomPoly);
+        $e->xStretchBackBuffer($this->bloomTexS, 0, 0, 256, 256, 0);
+        $e->xSetEffectTechnique($this->bloomPoly, 'DiffuseH'); $e->xRenderPostEffect($this->bloomPoly);
+        $e->xStretchBackBuffer($this->bloomTexS, 0, 0, 256, 256, 0);
+        $e->xSetEffectTechnique($this->bloomPoly, 'DiffuseV'); $e->xRenderPostEffect($this->bloomPoly);
+    }
+
     private function destroyAt(Engine $e, int $x, int $y, int $z): void
     {
         $k = $this->key($x, $y, $z);
@@ -1132,6 +1181,7 @@ final class MinecraftController extends Controller
             }
 
             $e->xRenderWorld();
+            $this->renderBloom();
             $this->drawHud($e, $hasTarget);
 
             if ($max > 0 && $frame + 1 >= $max && ($shot = getenv('CRAFT_SHOT'))) {
