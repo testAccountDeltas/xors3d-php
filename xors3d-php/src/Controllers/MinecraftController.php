@@ -133,6 +133,11 @@ final class MinecraftController extends Controller
     private string $lastPC = '';
 
     private float $seed = 0.0;
+    private int $sunDisc = 0;
+    private int $moonDisc = 0;
+    private int $moon = 0;   // night directional light
+    /** @var array<int,array<string,mixed>> drifting cloud slabs */
+    private array $clouds = [];
     /** @var array<int,int> hotbar type id => 2D icon image handle */
     private array $icon = [];
     /** @var array<string,int> mob part textures */
@@ -180,12 +185,16 @@ final class MinecraftController extends Controller
 
         $this->sun = $e->xCreateLight(Constants::LIGHT_DIRECTIONAL);
         $e->xRotateEntity($this->sun, 50, 30, 0);
+        $this->moon = $e->xCreateLight(Constants::LIGHT_DIRECTIONAL);
+        $e->xRotateEntity($this->moon, 230, 30, 0);
+        $e->xLightColor($this->moon, 0, 0, 0);
         $e->xAmbientLight(120, 120, 130);
         $e->xLoadFont('Arial', 14);
 
         $this->buildTemplates($e);
         $this->loadIcons($e);
         $this->loadMobTextures($e);
+        $this->createSky($e);
         $this->createHand($e, $this->camH);
         $this->pivot = $e->xCreatePivot();
         $this->loadSounds($e);
@@ -278,24 +287,105 @@ final class MinecraftController extends Controller
         $this->applyRenderDist();
     }
 
+    /** Create the visible sun/moon discs and a few drifting clouds (fog-immune). */
+    private function createSky(Engine $e): void
+    {
+        $sky = dirname(__DIR__, 2) . '/assets/sky/';
+        $fxSky = Constants::FX_FULLBRIGHT + Constants::FX_DISABLEFOG;
+
+        $this->sunDisc = $e->xCreateSprite();
+        $e->xEntityTexture($this->sunDisc, $e->xLoadTexture($sky . 'sun.png', 1 + 2 + 8));
+        $e->xEntityFX($this->sunDisc, $fxSky);
+        $e->xScaleSprite($this->sunDisc, 26, 26);
+
+        $this->moonDisc = $e->xCreateSprite();
+        $e->xEntityTexture($this->moonDisc, $e->xLoadTexture($sky . 'moon.png', 1 + 2 + 8));
+        $e->xEntityFX($this->moonDisc, $fxSky);
+        $e->xScaleSprite($this->moonDisc, 18, 18);
+
+        // real Minecraft cloud texture (with alpha) on flat slabs
+        $cloudTex = $e->xLoadTexture($sky . 'clouds.png', 1 + 2 + 8);
+        for ($i = 0; $i < 10; $i++) {
+            $c = $e->xCreateCube();
+            $w = mt_rand(10, 18); $d = mt_rand(8, 14);
+            $e->xScaleEntity($c, $this->scale * $w, $this->scale * 0.4, $this->scale * $d);
+            $e->xEntityTexture($c, $cloudTex);
+            $e->xEntityColor($c, 255, 255, 255);
+            $e->xEntityAlpha($c, 0.85);
+            $e->xEntityFX($c, $fxSky + Constants::FX_DISABLECULLING);
+            $this->clouds[] = [
+                'ent' => $c,
+                'x'   => mt_rand(-20, 140) * self::BLOCK,
+                'y'   => (self::MAX_H + mt_rand(9, 13)) * self::BLOCK,
+                'z'   => mt_rand(-20, 140) * self::BLOCK,
+                'sp'  => (mt_rand(2, 5) / 100.0) * self::BLOCK,
+            ];
+        }
+    }
+
+    /** Position sun & moon discs relative to the camera, drift the clouds. */
+    private function updateSkyObjects(): void
+    {
+        $e = $this->e;
+        $d = (int) $this->settings['renderDist'] * self::BLOCK * 0.9;
+        $cxp = $e->xEntityX($this->camH, 1);
+        $cyp = $e->xEntityY($this->camH, 1);
+        $czp = $e->xEntityZ($this->camH, 1);
+
+        // sun sits opposite the sun-light ray direction
+        $e->xTFormVector(0, 0, 1, $this->sun, 0);
+        $fx = $e->xTFormedX(); $fy = $e->xTFormedY(); $fz = $e->xTFormedZ();
+        $e->xPositionEntity($this->sunDisc, $cxp - $fx * $d, $cyp - $fy * $d, $czp - $fz * $d);
+        (-$fy > -0.05) ? $e->xShowEntity($this->sunDisc) : $e->xHideEntity($this->sunDisc);
+
+        // moon sits opposite the sun (along the moon-light ray direction)
+        $e->xTFormVector(0, 0, 1, $this->moon, 0);
+        $mx = $e->xTFormedX(); $my = $e->xTFormedY(); $mz = $e->xTFormedZ();
+        $e->xPositionEntity($this->moonDisc, $cxp - $mx * $d, $cyp - $my * $d, $czp - $mz * $d);
+        (-$my > -0.05) ? $e->xShowEntity($this->moonDisc) : $e->xHideEntity($this->moonDisc);
+
+        $lo = -30 * self::BLOCK; $hi = ($this->wsize + 30) * self::BLOCK;
+        foreach ($this->clouds as &$c) {
+            $c['x'] += $c['sp'];
+            if ($c['x'] > $hi) { $c['x'] = $lo; }
+            $e->xPositionEntity($c['ent'], $c['x'], $c['y'], $c['z']);
+        }
+        unset($c);
+    }
+
     private function updateSky(): void
     {
         $e = $this->e;
+
         if (!(int) $this->settings['daynight']) {
             $e->xCameraClsColor($this->camH, 140, 190, 235);
             $e->xCameraFogColor($this->camH, 140, 190, 235);
             $e->xRotateEntity($this->sun, 50, 30, 0);
+            $e->xLightColor($this->sun, 255, 250, 235);
+            $e->xLightColor($this->moon, 0, 0, 0);
             $e->xAmbientLight(120, 120, 130);
             return;
         }
+
         $ang = fmod($e->xMillisecs() / 120000.0, 1.0) * 360.0;
         $e->xRotateEntity($this->sun, $ang, 30, 0);
-        $day = max(0.0, sin(deg2rad($ang)));
-        $r = (int) (25 + $day * 115); $g = (int) (35 + $day * 155); $b = (int) (65 + $day * 170);
+        $e->xRotateEntity($this->moon, $ang + 180.0, 30, 0); // opposite the sun
+
+        $day   = max(0.0, sin(deg2rad($ang)));   // 1 at noon, 0 at night
+        $night = max(0.0, -sin(deg2rad($ang)));  // 1 at midnight, 0 at day
+
+        // sun bright by day, moon dim-blue by night
+        $e->xLightColor($this->sun, (int) (255 * $day), (int) (250 * $day), (int) (235 * $day));
+        $e->xLightColor($this->moon, (int) (80 * $night), (int) (95 * $night), (int) (150 * $night));
+
+        // sky: warm-blue day -> deep-blue night
+        $r = (int) (22 + $day * 118); $g = (int) (32 + $day * 158); $b = (int) (60 + $day * 175);
         $e->xCameraClsColor($this->camH, $r, $g, $b);
         $e->xCameraFogColor($this->camH, $r, $g, $b);
-        $amb = (int) (25 + $day * 100);
-        $e->xAmbientLight($amb, $amb, (int) ($amb * 1.1));
+
+        // keep night navigable (moonlit), bright at noon
+        $amb = (int) (45 + $day * 80);
+        $e->xAmbientLight($amb, $amb, (int) ($amb * 1.25)); // slightly blue ambient
     }
 
     // =================================================================== sound
@@ -1017,6 +1107,7 @@ final class MinecraftController extends Controller
         $e->xPositionEntity($this->camH, $mid + cos($t) * $r, (self::MAX_H + 6) * self::BLOCK, $mid + sin($t) * $r);
         $e->xPointEntity($this->camH, $this->pivot);
         $this->updateSky();
+        $this->updateSkyObjects();
         $this->animateWater();
         $this->updateMobs();
         $e->xRenderWorld();
@@ -1163,6 +1254,7 @@ final class MinecraftController extends Controller
             }
             $e->xTurnEntity($this->hand, 0, 1.5, 0);
             $this->updateSky();
+            $this->updateSkyObjects();
 
             $cx = (int) ($e->xGraphicsWidth() / 2);
             $cy = (int) ($e->xGraphicsHeight() / 2);
