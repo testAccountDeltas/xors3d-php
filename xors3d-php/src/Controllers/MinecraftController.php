@@ -272,6 +272,8 @@ final class MinecraftController extends Controller
         $this->updateStreaming($this->px, $this->pz); // build the world around spawn
         $this->clearMobs();                        // sheep re-stream around the new spot
         $this->mobTimer = 0;
+        $seed = min(4, (int) $this->settings['mobs']);
+        for ($i = 0; $i < $seed; $i++) { $this->spawnMobNear(); } // a few right away
     }
 
     // ================================================================ settings
