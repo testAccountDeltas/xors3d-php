@@ -35,6 +35,7 @@ final class MinecraftController extends Controller
     private const SEA   = 3;
     private const Y_MAX = 48;
     private const BLOCK = 2.0;
+    private const CH    = 8;      // chunk size (columns) for render-distance culling
 
     // player physics (world units)
     private const G     = 0.03;
@@ -72,8 +73,8 @@ final class MinecraftController extends Controller
     private array $settings = [
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
-        'fog' => 1, 'daynight' => 1, 'volume' => 0.8,
-        'worldSize' => 24, 'trees' => 1.0, 'water' => 1, 'mobs' => 6,
+        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 40,
+        'worldSize' => 64, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
     private const OPTIONS = [
@@ -83,9 +84,10 @@ final class MinecraftController extends Controller
         ['key' => 'fog',         'label' => 'Fog',               'type' => 'bool'],
         ['key' => 'daynight',    'label' => 'Day/night cycle',   'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
+        ['key' => 'renderDist',  'label' => 'Render distance',   'type' => 'int',  'min' => 16, 'max' => 96, 'step' => 8],
         ['key' => 'resolution',  'label' => 'Resolution',        'type' => 'res',  'note' => 'restart'],
         ['key' => 'vsync',       'label' => 'VSync',             'type' => 'bool', 'note' => 'restart'],
-        ['key' => 'worldSize',   'label' => 'World size',        'type' => 'int',  'min' => 10, 'max' => 32, 'step' => 2, 'note' => 'new world'],
+        ['key' => 'worldSize',   'label' => 'World size',        'type' => 'int',  'min' => 16, 'max' => 128, 'step' => 8, 'note' => 'new world'],
         ['key' => 'trees',       'label' => 'Tree density',      'type' => 'float', 'min' => 0.0, 'max' => 3.0, 'step' => 0.5, 'note' => 'new world'],
         ['key' => 'water',       'label' => 'Water',             'type' => 'bool', 'note' => 'new world'],
         ['key' => 'mobs',        'label' => 'Sheep count',       'type' => 'int',  'min' => 0, 'max' => 16, 'step' => 1, 'note' => 'new world'],
@@ -122,6 +124,12 @@ final class MinecraftController extends Controller
     /** @var array<int,string> */ private array $entToCell = [];
     /** @var int[] */ private array $waterList = [];
     /** @var array<int,array<int,int>> */ private array $height = [];
+
+    // render-distance culling (chunks)
+    /** @var array<string,int[]> "cx,cz" => entity handles */ private array $chunk = [];
+    /** @var array<int,string> entity => chunk key */ private array $entChunk = [];
+    /** @var array<string,bool> chunk key => currently visible */ private array $chunkVis = [];
+    private string $lastPC = '';
 
     private float $seed = 0.0;
     /** @var array<int,int> hotbar type id => 2D icon image handle */
@@ -223,6 +231,7 @@ final class MinecraftController extends Controller
         $this->vy = 0.0;
         $this->onGround = false;
         $this->cam->reset();
+        $this->lastPC = ''; // force chunk-visibility refresh around the new spot
         $this->e->xPositionEntity($this->camH, $this->px, $this->py + self::EYE, $this->pz);
     }
 
@@ -257,6 +266,7 @@ final class MinecraftController extends Controller
         if ($this->ambCh !== 0) {
             $this->e->xChannelVolume($this->ambCh, (float) $this->settings['volume'] * 0.6);
         }
+        $this->applyRenderDist();
     }
 
     private function updateSky(): void
@@ -365,6 +375,8 @@ final class MinecraftController extends Controller
         foreach ($this->cell as $h) { $e->xFreeEntity($h); }
         foreach ($this->waterList as $h) { $e->xFreeEntity($h); }
         $this->cell = $this->cellType = $this->entToCell = $this->waterList = $this->height = [];
+        $this->chunk = $this->entChunk = $this->chunkVis = [];
+        $this->lastPC = '';
     }
 
     private function rebuildWorld(): void
@@ -482,7 +494,10 @@ final class MinecraftController extends Controller
             do {
                 $wx = mt_rand(2, $this->wsize - 3) * self::BLOCK;
                 $wz = mt_rand(2, $this->wsize - 3) * self::BLOCK;
-            } while ($this->isWaterAt($wx, $wz) && ++$tries < 8);
+                $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
+                $gt = $this->groundTop($bx, $bz);
+                $onTree = isset($this->cell["$bx," . ($gt + 1) . ",$bz"]); // avoid trees
+            } while (($this->isWaterAt($wx, $wz) || $onTree) && ++$tries < 12);
             $this->mobs[] = $this->buildSheep($wx, $wz);
         }
     }
@@ -556,36 +571,52 @@ final class MinecraftController extends Controller
         }
     }
 
+    private function mobWalkable(float $nx, float $nz, int $curG): bool
+    {
+        $B = self::BLOCK;
+        $lo = 1.5 * $B; $hi = ($this->wsize - 2.5) * $B;
+        if ($nx < $lo || $nx > $hi || $nz < $lo || $nz > $hi) { return false; }
+        if ($this->isWaterAt($nx, $nz)) { return false; }
+        return !$this->mobBlocked($this->cellOf($nx), $this->cellOf($nz), $curG);
+    }
+
+    /** Try to advance, sliding around obstacles by testing nearby headings. */
+    private function mobTryStep(array &$m, int $curG, float $spd): bool
+    {
+        $B = self::BLOCK;
+        $base = atan2($m['dx'], $m['dz']);
+        foreach ([0, 40, -40, 80, -80, 130, -130, 180] as $deg) {
+            $a = $base + $deg * M_PI / 180.0;
+            $cdx = sin($a); $cdz = cos($a);
+            $nx = $m['x'] + $cdx * $spd * $B;
+            $nz = $m['z'] + $cdz * $spd * $B;
+            if ($this->mobWalkable($nx, $nz, $curG)) {
+                $m['x'] = $nx; $m['z'] = $nz;
+                $m['dx'] = $cdx; $m['dz'] = $cdz;
+                $m['yaw'] = $a * 180.0 / M_PI;
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function updateMobs(): void
     {
-        $e = $this->e; $B = self::BLOCK; $spd = 0.035;
-        $lo = 1.5 * $B; $hi = ($this->wsize - 2.5) * $B;
+        $e = $this->e; $B = self::BLOCK; $spd = 0.05;
 
         foreach ($this->mobs as &$m) {
-            $cbx = $this->cellOf($m['x']); $cbz = $this->cellOf($m['z']);
-            $curG = $this->groundTop($cbx, $cbz);
+            $curG = $this->groundTop($this->cellOf($m['x']), $this->cellOf($m['z']));
 
             if (--$m['timer'] <= 0) {
                 $this->mobPickDir($m);
                 $m['timer'] = mt_rand(80, 220);
             }
 
-            $moving = ($m['dx'] !== 0.0 || $m['dz'] !== 0.0);
-            if ($moving) {
-                $nx = $m['x'] + $m['dx'] * $spd * $B;
-                $nz = $m['z'] + $m['dz'] * $spd * $B;
-                $bx = $this->cellOf($nx); $bz = $this->cellOf($nz);
-
-                $blocked = $nx < $lo || $nx > $hi || $nz < $lo || $nz > $hi
-                        || $this->isWaterAt($nx, $nz)
-                        || $this->mobBlocked($bx, $bz, $curG);
-
-                if ($blocked) {
-                    // try to go around: pick a fresh heading and pause briefly
+            if ($m['dx'] !== 0.0 || $m['dz'] !== 0.0) {
+                if (!$this->mobTryStep($m, $curG, $spd)) {
+                    // boxed in on all sides: pick a new goal shortly
                     $this->mobPickDir($m);
-                    $m['timer'] = mt_rand(30, 80);
-                } else {
-                    $m['x'] = $nx; $m['z'] = $nz;
+                    $m['timer'] = mt_rand(20, 50);
                 }
             }
 
@@ -673,6 +704,7 @@ final class MinecraftController extends Controller
         $this->cell[$k] = $block;
         $this->cellType[$k] = $type;
         $this->entToCell[$block] = $k;
+        $this->addToChunk($block, $x, $z);
     }
 
     private function spawnWater(Engine $e, int $x, int $y, int $z): void
@@ -680,14 +712,77 @@ final class MinecraftController extends Controller
         $w = $e->xCopyEntity($this->waterTpl);
         $e->xPositionEntity($w, $x * self::BLOCK, $y * self::BLOCK, $z * self::BLOCK);
         $this->waterList[] = $w;
+        $this->addToChunk($w, $x, $z);
+    }
+
+    // ------------------------------------------------- render-distance culling
+
+    private function addToChunk(int $handle, int $bx, int $bz): void
+    {
+        $ck = intdiv($bx, self::CH) . ',' . intdiv($bz, self::CH);
+        $this->chunk[$ck][] = $handle;
+        $this->entChunk[$handle] = $ck;
+        if (($this->chunkVis[$ck] ?? true) === false) {
+            $this->e->xHideEntity($handle); // born into an already-hidden chunk
+        }
+    }
+
+    private function removeFromChunk(int $handle): void
+    {
+        $ck = $this->entChunk[$handle] ?? null;
+        if ($ck === null) { return; }
+        $i = array_search($handle, $this->chunk[$ck], true);
+        if ($i !== false) { array_splice($this->chunk[$ck], $i, 1); }
+        unset($this->entChunk[$handle]);
+    }
+
+    /** Show only chunks within render distance of the player; refresh on crossing. */
+    private function updateChunks(): void
+    {
+        $pcx = intdiv(max(0, $this->cellOf($this->px)), self::CH);
+        $pcz = intdiv(max(0, $this->cellOf($this->pz)), self::CH);
+        $pc = "$pcx,$pcz";
+        if ($pc === $this->lastPC) { return; }
+        $this->lastPC = $pc;
+
+        $r = (int) ceil(((int) $this->settings['renderDist']) / self::CH);
+        foreach ($this->chunk as $ck => $list) {
+            [$cx, $cz] = explode(',', $ck);
+            $vis = abs((int) $cx - $pcx) <= $r && abs((int) $cz - $pcz) <= $r;
+            if (($this->chunkVis[$ck] ?? true) !== $vis) {
+                $this->chunkVis[$ck] = $vis;
+                foreach ($list as $h) { $vis ? $this->e->xShowEntity($h) : $this->e->xHideEntity($h); }
+            }
+        }
+    }
+
+    private function showAllChunks(): void
+    {
+        foreach ($this->chunk as $ck => $list) {
+            if (($this->chunkVis[$ck] ?? true) !== true) {
+                foreach ($list as $h) { $this->e->xShowEntity($h); }
+            }
+            $this->chunkVis[$ck] = true;
+        }
+        $this->lastPC = '';
+    }
+
+    private function applyRenderDist(): void
+    {
+        $d = (int) $this->settings['renderDist'] * self::BLOCK;
+        $this->e->xCameraRange($this->camH, 0.2, $d * 1.3);
+        $this->e->xCameraFogRange($this->camH, $d * 0.55, $d * 0.95);
+        $this->lastPC = ''; // force a chunk-visibility refresh
     }
 
     private function destroyAt(Engine $e, int $x, int $y, int $z): void
     {
         $k = $this->key($x, $y, $z);
         if (!isset($this->cell[$k])) { return; }
-        $e->xFreeEntity($this->cell[$k]);
-        unset($this->entToCell[$this->cell[$k]], $this->cell[$k], $this->cellType[$k]);
+        $handle = $this->cell[$k];
+        $this->removeFromChunk($handle);
+        $e->xFreeEntity($handle);
+        unset($this->entToCell[$handle], $this->cell[$k], $this->cellType[$k]);
         $this->play($this->sndBreak);
 
         foreach ([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as [$dx, $dy, $dz]) {
@@ -763,6 +858,7 @@ final class MinecraftController extends Controller
         $items   = ['Play', 'New World', 'Save World', 'Load World', 'Settings', 'Quit'];
         $actions = ['play', 'new', 'save', 'load', 'settings', 'quit'];
         $sel = 0; $e = $this->e;
+        $this->showAllChunks(); // backdrop shows the whole world
         $shot = getenv('CRAFT_MENUSHOT'); $sf = 0;
 
         while (true) {
@@ -1002,6 +1098,7 @@ final class MinecraftController extends Controller
 
             $this->cam->lookOnly();
             $this->move();
+            $this->updateChunks();
             $this->animateWater();
             $this->updateMobs();
 
