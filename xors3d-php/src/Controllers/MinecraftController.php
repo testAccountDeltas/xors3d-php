@@ -73,7 +73,8 @@ final class MinecraftController extends Controller
     private array $settings = [
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
-        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 40, 'bloom' => 0,
+        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 40,
+        'bloom' => 0, 'godrays' => 1,
         'worldSize' => 64, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -84,6 +85,7 @@ final class MinecraftController extends Controller
         ['key' => 'fog',         'label' => 'Fog',               'type' => 'bool'],
         ['key' => 'daynight',    'label' => 'Day/night cycle',   'type' => 'bool'],
         ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
+        ['key' => 'godrays',     'label' => 'Sun rays (shader)', 'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
         ['key' => 'renderDist',  'label' => 'Render distance',   'type' => 'int',  'min' => 16, 'max' => 96, 'step' => 8],
         ['key' => 'resolution',  'label' => 'Resolution',        'type' => 'res',  'note' => 'restart'],
@@ -155,6 +157,12 @@ final class MinecraftController extends Controller
     private int $bloomFX = 0;
     private bool $bloomOK = false;
 
+    // god-rays post-effect (shader)
+    private int $godPoly = 0;
+    private int $godTex = 0;
+    private int $godFX = 0;
+    private bool $godOK = false;
+
     // sounds
     private int $sndBreak = 0;
     private int $sndPlace = 0;
@@ -202,6 +210,7 @@ final class MinecraftController extends Controller
         $this->pivot = $e->xCreatePivot();
         $this->loadSounds($e);
         $this->setupBloom($e);
+        $this->setupGodRays($e);
         $this->applySettings();
         $this->rebuildWorld();
 
@@ -942,6 +951,66 @@ final class MinecraftController extends Controller
         $e->xSetEffectTechnique($this->bloomPoly, 'DiffuseV'); $e->xRenderPostEffect($this->bloomPoly);
     }
 
+    // ================================================================ god rays
+
+    private function setupGodRays(Engine $e): void
+    {
+        $fx = dirname(__DIR__, 2) . '/assets/shaders/GodRays.fx';
+        if (!is_file($fx)) { $this->godOK = false; return; }
+        $this->godFX = $e->xLoadFXFile($fx);
+        if (!$e->xValidateEffectTechnique($this->godFX, 'Rays')) {
+            $this->godOK = false;   // GPU/shader model unsupported -> skip
+            return;
+        }
+        $w = (int) $this->settings['width'];
+        $h = (int) $this->settings['height'];
+        $this->godPoly = $e->xCreatePostEffectPoly($this->camH, 1);
+        $this->godTex  = $e->xCreateTexture($w, $h);
+        $e->xSetEntityEffect($this->godPoly, $this->godFX);
+        $e->xSetEffectTechnique($this->godPoly, 'Rays');
+        $e->xSetEffectMatrixSemantic($this->godPoly, 'MatWorldViewProj', Constants::WORLDVIEWPROJ);
+        $e->xSetEffectTexture($this->godPoly, 'tScene', $this->godTex);
+        $e->xSetEffectFloat($this->godPoly, 'Density', 0.88);
+        $e->xSetEffectFloat($this->godPoly, 'Decay', 0.965);
+        $e->xSetEffectFloat($this->godPoly, 'Weight', 0.45);
+        $e->xSetEffectFloat($this->godPoly, 'Threshold', 0.8);
+        $this->godOK = true;
+    }
+
+    /** Radial light shafts from the sun, when it is on screen. */
+    private function renderGodRays(): void
+    {
+        if (!$this->godOK || !(int) $this->settings['godrays'] || $this->dayF <= 0.05) {
+            return;
+        }
+        $e = $this->e;
+        $w = (int) $this->settings['width'];
+        $h = (int) $this->settings['height'];
+
+        // is the sun in front of the camera?
+        $sx = $e->xEntityX($this->sunDisc, 1);
+        $sy = $e->xEntityY($this->sunDisc, 1);
+        $sz = $e->xEntityZ($this->sunDisc, 1);
+        $e->xTFormVector(0, 0, 1, $this->camH, 0);
+        $fwx = $e->xTFormedX(); $fwy = $e->xTFormedY(); $fwz = $e->xTFormedZ();
+        $tx = $sx - $e->xEntityX($this->camH, 1);
+        $ty = $sy - $e->xEntityY($this->camH, 1);
+        $tz = $sz - $e->xEntityZ($this->camH, 1);
+        if ($fwx * $tx + $fwy * $ty + $fwz * $tz <= 0.0) { return; } // sun behind camera
+
+        $e->xCameraProject($this->camH, $sx, $sy, $sz);
+        $u = $e->xProjectedX() / $w;
+        $v = $e->xProjectedY() / $h;
+        if ($u < -0.6 || $u > 1.6 || $v < -0.6 || $v > 1.6) { return; } // far off-screen
+
+        $e->xSetEffectVector($this->godPoly, 'SunUV', $u, $v, 0, 0);
+        $e->xSetEffectVector($this->godPoly, 'RayColor', 1.0, 0.92, 0.65, 0);
+
+        $e->xStretchBackBuffer($this->godTex, 0, 0, $w, $h, 0);
+        $e->xSetEffectTechnique($this->godPoly, 'Rays');
+        $e->xRenderPostEffect($this->godPoly);
+    }
+
     private function destroyAt(Engine $e, int $x, int $y, int $z): void
     {
         $k = $this->key($x, $y, $z);
@@ -1303,6 +1372,7 @@ final class MinecraftController extends Controller
             if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
             $e->xRenderWorld();
+            $this->renderGodRays();
             $this->renderBloom();
             $this->drawHud($e, $hasTarget);
 
