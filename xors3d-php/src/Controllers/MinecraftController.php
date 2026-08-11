@@ -118,6 +118,7 @@ final class MinecraftController extends Controller
     private float $vy = 0.0;
     private bool $onGround = false;
     private int $lastStep = 0;
+    private int $mobTimer = 0;
 
     /** @var array<int,int> */ private array $template = [];
     /** @var array<int,int> */ private array $tex = [];
@@ -269,6 +270,8 @@ final class MinecraftController extends Controller
         $this->e->xPositionEntity($this->camH, $this->px, $this->py + self::EYE, $this->pz);
         $this->streamCX = PHP_INT_MAX;              // force streaming refresh
         $this->updateStreaming($this->px, $this->pz); // build the world around spawn
+        $this->clearMobs();                        // sheep re-stream around the new spot
+        $this->mobTimer = 0;
     }
 
     // ================================================================ settings
@@ -545,7 +548,6 @@ final class MinecraftController extends Controller
     private function generateData(): void
     {
         $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
-        $this->spawnMobs((int) $this->settings['mobs']);
     }
 
     /** Deterministically populate a chunk's trees into the edit overlay (once). */
@@ -616,18 +618,42 @@ final class MinecraftController extends Controller
         return $this->heightAt($bx, $bz) < self::SEA;
     }
 
-    private function spawnMobs(int $count): void
+    /** Spawn one sheep near the player (on suitable ground), returns success. */
+    private function spawnMobNear(): bool
     {
-        for ($i = 0; $i < $count; $i++) {
-            $tries = 0;
-            do {
-                $wx = $this->originX + mt_rand(-30, 30) * self::BLOCK;
-                $wz = $this->originZ + mt_rand(-30, 30) * self::BLOCK;
-                $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
-                $gt = $this->groundTop($bx, $bz);
-                $onTree = $this->solidType($bx, $gt + 1, $bz) > 0; // avoid trees
-            } while (($this->isWaterAt($wx, $wz) || $onTree) && ++$tries < 12);
+        $B = self::BLOCK;
+        $reach = (int) $this->settings['renderDist'] * $B;
+        for ($tries = 0; $tries < 12; $tries++) {
+            $a = mt_rand(0, 359) * M_PI / 180.0;
+            $dist = $reach * (0.45 + mt_rand(0, 40) / 100.0); // 0.45..0.85 of render dist
+            $wx = $this->px + cos($a) * $dist;
+            $wz = $this->pz + sin($a) * $dist;
+            $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
+            $gt = $this->groundTop($bx, $bz);
+            if ($this->isWaterAt($wx, $wz) || $this->solidType($bx, $gt + 1, $bz) > 0) { continue; }
             $this->mobs[] = $this->buildSheep($wx, $wz);
+            return true;
+        }
+        return false;
+    }
+
+    /** Keep ~cap sheep alive around the player: despawn far ones, spawn new ahead. */
+    private function streamMobs(): void
+    {
+        $B = self::BLOCK;
+        $cap = (int) $this->settings['mobs'];
+        $far = (int) $this->settings['renderDist'] * $B + 20 * $B;
+
+        foreach ($this->mobs as $i => $m) {
+            if (abs($m['x'] - $this->px) > $far || abs($m['z'] - $this->pz) > $far) {
+                foreach ($m['parts'] as $p) { $this->e->xFreeEntity($p); }
+                $this->e->xFreeEntity($m['pivot']);
+                unset($this->mobs[$i]);
+            }
+        }
+        if (--$this->mobTimer <= 0) {
+            $this->mobTimer = mt_rand(50, 130);
+            if (count($this->mobs) < $cap) { $this->spawnMobNear(); }
         }
     }
 
@@ -699,7 +725,7 @@ final class MinecraftController extends Controller
     {
         $B = self::BLOCK;
         $leash = 70 * $B; // keep sheep roaming near home
-        if (abs($nx - $this->originX) > $leash || abs($nz - $this->originZ) > $leash) { return false; }
+        if (abs($nx - $this->px) > $leash || abs($nz - $this->pz) > $leash) { return false; }
         if ($this->isWaterAt($nx, $nz)) { return false; }
         return !$this->mobBlocked($this->cellOf($nx), $this->cellOf($nz), $curG);
     }
@@ -1182,7 +1208,6 @@ final class MinecraftController extends Controller
             [$x, $y, $z] = array_map('intval', explode(',', (string) $k));
             $this->setEdit($x, $y, $z, (int) $type);
         }
-        $this->spawnMobs((int) $this->settings['mobs']);
         $this->status = 'World loaded.'; // chunks stream in around the player on Play
     }
 
@@ -1306,6 +1331,7 @@ final class MinecraftController extends Controller
         $this->updateSky();
         $this->updateSkyObjects();
         $this->animateWater();
+        $this->streamMobs();
         $this->updateMobs();
         $e->xRenderWorld();
     }
@@ -1437,6 +1463,7 @@ final class MinecraftController extends Controller
             $this->move();
             $this->updateStreaming($this->px, $this->pz);
             $this->animateWater();
+            $this->streamMobs();
             $this->updateMobs();
 
             // block selection: number keys 1-9 + mouse wheel
