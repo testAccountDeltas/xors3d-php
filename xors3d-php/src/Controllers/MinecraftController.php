@@ -1003,8 +1003,12 @@ final class MinecraftController extends Controller
                         foreach ([$a0, $a1, $a2, $a3] as $vi) {
                             $e->xVertexNormal($s, $vi, $nrm[0], $nrm[1], $nrm[2]);
                         }
+                        // both windings so the face is never culled from the outside,
+                        // regardless of per-axis chirality (backface culling keeps one)
                         $e->xAddTriangle($s, $a0, $a1, $a2);
                         $e->xAddTriangle($s, $a0, $a2, $a3);
+                        $e->xAddTriangle($s, $a0, $a2, $a1);
+                        $e->xAddTriangle($s, $a0, $a3, $a2);
 
                         for ($l = 0; $l < $hgt; $l++) {
                             for ($k = 0; $k < $w; $k++) { $mask[$n + $i + $k + $l * $du] = 0; }
@@ -1044,8 +1048,7 @@ final class MinecraftController extends Controller
         $yMax = min(self::Y_MAX, $yMax);
 
         $mesh = $e->xCreateMesh();
-        $this->greedyMesh($mesh, $x0, $z0, $yMax); // sets its own vertex normals
-        $e->xEntityFX($mesh, Constants::FX_DISABLECULLING);
+        $this->greedyMesh($mesh, $x0, $z0, $yMax); // sets its own vertex normals + double winding
         $e->xEntityPickMode($mesh, 2);
 
         $list = [];
@@ -1114,9 +1117,9 @@ final class MinecraftController extends Controller
     private function applyRenderDist(): void
     {
         $d = (int) $this->settings['renderDist'] * self::BLOCK;
-        $this->e->xCameraRange($this->camH, 0.2, $d * 1.35);
-        // keep the view clear; only the far edge fades into fog
-        $this->e->xCameraFogRange($this->camH, $d * 0.80, $d * 1.15);
+        $this->e->xCameraRange($this->camH, 0.2, $d * 1.4);
+        // very light fog: clear almost to the far edge, only a thin haze at the end
+        $this->e->xCameraFogRange($this->camH, $d * 1.02, $d * 1.35);
         $this->streamCX = PHP_INT_MAX; // force a streaming refresh
         $this->streamCZ = PHP_INT_MAX;
     }
@@ -1406,7 +1409,7 @@ final class MinecraftController extends Controller
         $e = $this->e;
         $mid = $this->originX;
         $t = $e->xMillisecs() / 4000.0;
-        $r = (int) $this->settings["renderDist"] * self::BLOCK * 0.8;
+        $r = (int) $this->settings["renderDist"] * self::BLOCK * 0.5;
         $e->xPositionEntity($this->pivot, $mid, self::MAX_H * self::BLOCK, $mid);
         $e->xPositionEntity($this->camH, $mid + cos($t) * $r, (self::MAX_H + 6) * self::BLOCK, $mid + sin($t) * $r);
         $e->xPointEntity($this->camH, $this->pivot);
@@ -1542,11 +1545,12 @@ final class MinecraftController extends Controller
             if ($this->closeRequested()) { $this->quit = true; return; }
             if ($max === 0 && $e->xKeyHit(Constants::KEY_ESCAPE)) { return; }
 
-            // frame-time factor so movement/physics are FPS-independent (1.0 == 60 FPS)
+            // frame-time factor so movement/physics are FPS-independent (1.0 == 60 FPS).
+            // No lower clamp: at high FPS dt must be small; only cap large hitches.
             $now = $e->xMillisecs();
             $frameMs = $this->lastMs > 0 ? ($now - $this->lastMs) : 16;
             $this->lastMs = $now;
-            $this->dt = max(0.25, min(3.0, $frameMs / 16.6667));
+            $this->dt = min(3.0, max(0.0, $frameMs) / 16.6667);
 
             if ($e->xKeyHit(Constants::KEY_F)) { $this->fly = !$this->fly; $this->vy = 0.0; }
 
