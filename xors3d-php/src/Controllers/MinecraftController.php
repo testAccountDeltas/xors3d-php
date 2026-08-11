@@ -30,10 +30,10 @@ final class MinecraftController extends Controller
 {
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
-    private const MAX_H = 7;
-    private const SNOW  = 6;
-    private const SEA   = 2;
-    private const Y_MAX = 40;
+    private const MAX_H = 11;
+    private const SNOW  = 9;
+    private const SEA   = 3;
+    private const Y_MAX = 48;
     private const BLOCK = 2.0;
 
     // player physics (world units)
@@ -73,7 +73,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8,
-        'worldSize' => 20, 'trees' => 1.0, 'water' => 1,
+        'worldSize' => 24, 'trees' => 1.0, 'water' => 1, 'mobs' => 6,
     ];
 
     private const OPTIONS = [
@@ -88,6 +88,7 @@ final class MinecraftController extends Controller
         ['key' => 'worldSize',   'label' => 'World size',        'type' => 'int',  'min' => 10, 'max' => 32, 'step' => 2, 'note' => 'new world'],
         ['key' => 'trees',       'label' => 'Tree density',      'type' => 'float', 'min' => 0.0, 'max' => 3.0, 'step' => 0.5, 'note' => 'new world'],
         ['key' => 'water',       'label' => 'Water',             'type' => 'bool', 'note' => 'new world'],
+        ['key' => 'mobs',        'label' => 'Sheep count',       'type' => 'int',  'min' => 0, 'max' => 16, 'step' => 1, 'note' => 'new world'],
     ];
 
     private Engine $e;
@@ -121,6 +122,14 @@ final class MinecraftController extends Controller
     /** @var array<int,string> */ private array $entToCell = [];
     /** @var int[] */ private array $waterList = [];
     /** @var array<int,array<int,int>> */ private array $height = [];
+
+    private float $seed = 0.0;
+    /** @var array<int,int> hotbar type id => 2D icon image handle */
+    private array $icon = [];
+    /** @var array<string,int> mob part textures */
+    private array $mobTex = [];
+    /** @var array<int,array<string,mixed>> active sheep mobs */
+    private array $mobs = [];
 
     // sounds
     private int $sndBreak = 0;
@@ -159,6 +168,8 @@ final class MinecraftController extends Controller
         $e->xLoadFont('Arial', 14);
 
         $this->buildTemplates($e);
+        $this->loadIcons($e);
+        $this->loadMobTextures($e);
         $this->createHand($e, $this->camH);
         $this->pivot = $e->xCreatePivot();
         $this->loadSounds($e);
@@ -350,6 +361,7 @@ final class MinecraftController extends Controller
     private function clearWorld(): void
     {
         $e = $this->e;
+        $this->clearMobs();
         foreach ($this->cell as $h) { $e->xFreeEntity($h); }
         foreach ($this->waterList as $h) { $e->xFreeEntity($h); }
         $this->cell = $this->cellType = $this->entToCell = $this->waterList = $this->height = [];
@@ -365,14 +377,14 @@ final class MinecraftController extends Controller
     private function generateWorld(Engine $e): void
     {
         $n = $this->wsize;
-        $seed = mt_rand() / mt_getrandmax() * 6.28;
+        $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
 
+        // multi-octave value noise -> rolling hills, mountains and basins (lakes)
         for ($x = 0; $x < $n; $x++) {
             for ($z = 0; $z < $n; $z++) {
-                $v = 3.0
-                    + 2.2 * sin($x * 0.35 + $seed) * cos($z * 0.30 - $seed)
-                    + 1.4 * sin(($x + $z) * 0.20 + $seed);
-                $this->height[$x][$z] = max(0, min(self::MAX_H, (int) round($v)));
+                $f = $this->fbm($x * 0.09, $z * 0.09) / 0.9375;   // 0..1
+                $h = (int) round($f * $f * self::MAX_H);           // bias toward valleys
+                $this->height[$x][$z] = max(0, min(self::MAX_H, $h));
             }
         }
 
@@ -402,6 +414,156 @@ final class MinecraftController extends Controller
                     }
                 }
             }
+        }
+
+        $this->spawnMobs((int) $this->settings['mobs']);
+    }
+
+    // ------------------------------------------------------------- value noise
+
+    private function hash2(float $x, float $z): float
+    {
+        $h = sin($x * 127.1 + $z * 311.7 + $this->seed) * 43758.5453;
+        return $h - floor($h);
+    }
+
+    private function vnoise(float $x, float $z): float
+    {
+        $x0 = floor($x); $z0 = floor($z);
+        $fx = $x - $x0;  $fz = $z - $z0;
+        $u = $fx * $fx * (3 - 2 * $fx);
+        $v = $fz * $fz * (3 - 2 * $fz);
+        $a = $this->hash2($x0, $z0);       $b = $this->hash2($x0 + 1, $z0);
+        $c = $this->hash2($x0, $z0 + 1);   $d = $this->hash2($x0 + 1, $z0 + 1);
+        return ($a * (1 - $u) + $b * $u) * (1 - $v) + ($c * (1 - $u) + $d * $u) * $v;
+    }
+
+    private function fbm(float $x, float $z): float
+    {
+        $sum = 0.0; $amp = 0.5; $freq = 1.0;
+        for ($o = 0; $o < 4; $o++) {
+            $sum += $amp * $this->vnoise($x * $freq, $z * $freq);
+            $amp *= 0.5; $freq *= 2.0;
+        }
+        return $sum; // 0 .. 0.9375
+    }
+
+    // ==================================================================== mobs
+
+    private function loadMobTextures(Engine $e): void
+    {
+        $d = dirname(__DIR__, 2) . '/assets/mobs/';
+        $this->mobTex['wool'] = $e->xLoadTexture($d . 'wool.png');
+        $this->mobTex['leg']  = $e->xLoadTexture($d . 'leg.png');
+        $this->mobTex['face'] = $e->xLoadTexture($d . 'face.png');
+    }
+
+    private function terrainTopY(float $wx, float $wz): float
+    {
+        $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
+        $h = ($bx >= 0 && $bz >= 0 && $bx < $this->wsize && $bz < $this->wsize)
+            ? $this->height[$bx][$bz] : self::SEA;
+        return $h * self::BLOCK + self::BLOCK / 2;
+    }
+
+    private function isWaterAt(float $wx, float $wz): bool
+    {
+        $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
+        if ($bx < 0 || $bz < 0 || $bx >= $this->wsize || $bz >= $this->wsize) { return false; }
+        return $this->height[$bx][$bz] < self::SEA;
+    }
+
+    private function spawnMobs(int $count): void
+    {
+        for ($i = 0; $i < $count; $i++) {
+            $tries = 0;
+            do {
+                $wx = mt_rand(2, $this->wsize - 3) * self::BLOCK;
+                $wz = mt_rand(2, $this->wsize - 3) * self::BLOCK;
+            } while ($this->isWaterAt($wx, $wz) && ++$tries < 8);
+            $this->mobs[] = $this->buildSheep($wx, $wz);
+        }
+    }
+
+    private function buildSheep(float $wx, float $wz): array
+    {
+        $e = $this->e; $B = self::BLOCK;
+        $pivot = $e->xCreatePivot();
+        $parts = [];
+
+        $part = function (float $w, float $h, float $d, int $tex, float $ox, float $oy, float $oz) use ($e, $pivot, &$parts): void {
+            $c = $e->xCreateCube();
+            $e->xScaleEntity($c, $this->scale * $w, $this->scale * $h, $this->scale * $d);
+            $e->xEntityTexture($c, $tex);
+            $e->xEntityParent($c, $pivot);
+            $e->xPositionEntity($c, $ox, $oy, $oz, 0);
+            $parts[] = $c;
+        };
+
+        $wool = $this->mobTex['wool']; $leg = $this->mobTex['leg']; $face = $this->mobTex['face'];
+        $part(1.1, 0.85, 0.75, $wool, 0,          0.85 * $B, 0);          // body
+        $part(0.55, 0.55, 0.55, $wool, 0,         1.05 * $B, 0.62 * $B);  // head
+        $part(0.35, 0.35, 0.15, $face, 0,         1.00 * $B, 0.90 * $B);  // muzzle
+        foreach ([[-0.35, -0.28], [0.35, -0.28], [-0.35, 0.28], [0.35, 0.28]] as [$lx, $lz]) {
+            $part(0.2, 0.55, 0.2, $leg, $lx * $B, 0.28 * $B, $lz * $B);   // legs
+        }
+
+        $e->xPositionEntity($pivot, $wx, $this->terrainTopY($wx, $wz), $wz);
+        return ['pivot' => $pivot, 'parts' => $parts, 'x' => $wx, 'z' => $wz,
+                'dx' => 0.0, 'dz' => 0.0, 'yaw' => 0.0, 'timer' => 0];
+    }
+
+    private function updateMobs(): void
+    {
+        $e = $this->e; $B = self::BLOCK; $spd = 0.03;
+        $lo = 1.5 * $B; $hi = ($this->wsize - 2.5) * $B;
+
+        foreach ($this->mobs as &$m) {
+            if (--$m['timer'] <= 0) {
+                if (mt_rand(0, 2) === 0) {          // idle
+                    $m['dx'] = 0.0; $m['dz'] = 0.0;
+                } else {
+                    $a = mt_rand(0, 359) * M_PI / 180.0;
+                    $m['dx'] = sin($a); $m['dz'] = cos($a);
+                    $m['yaw'] = $a * 180.0 / M_PI;
+                }
+                $m['timer'] = mt_rand(60, 200);
+            }
+
+            $nx = $m['x'] + $m['dx'] * $spd * $B;
+            $nz = $m['z'] + $m['dz'] * $spd * $B;
+            if ($nx < $lo || $nx > $hi || $nz < $lo || $nz > $hi || $this->isWaterAt($nx, $nz)) {
+                $m['dx'] = -$m['dx']; $m['dz'] = -$m['dz']; // turn away from edge/water
+                $m['yaw'] = fmod($m['yaw'] + 180.0, 360.0);
+                $m['timer'] = mt_rand(60, 120);
+            } else {
+                $m['x'] = $nx; $m['z'] = $nz;
+            }
+
+            $e->xPositionEntity($m['pivot'], $m['x'], $this->terrainTopY($m['x'], $m['z']), $m['z']);
+            $e->xRotateEntity($m['pivot'], 0, $m['yaw'], 0);
+        }
+        unset($m);
+    }
+
+    private function clearMobs(): void
+    {
+        foreach ($this->mobs as $m) {
+            foreach ($m['parts'] as $p) { $this->e->xFreeEntity($p); }
+            $this->e->xFreeEntity($m['pivot']);
+        }
+        $this->mobs = [];
+    }
+
+    // =============================================================== hud icons
+
+    private function loadIcons(Engine $e): void
+    {
+        $base = dirname(__DIR__, 2) . '/assets/blocks/';
+        foreach (self::HOTBAR as $id) {
+            $img = $e->xLoadImage($base . self::TYPES[$id][1]);
+            $e->xResizeImage($img, 44, 44);
+            $this->icon[$id] = $img;
         }
     }
 
@@ -539,6 +701,7 @@ final class MinecraftController extends Controller
                 }
             }
         }
+        $this->spawnMobs((int) $this->settings['mobs']);
         $this->status = 'World loaded.';
     }
 
@@ -659,6 +822,7 @@ final class MinecraftController extends Controller
         $e->xPointEntity($this->camH, $this->pivot);
         $this->updateSky();
         $this->animateWater();
+        $this->updateMobs();
         $e->xRenderWorld();
     }
 
@@ -788,6 +952,7 @@ final class MinecraftController extends Controller
             $this->cam->lookOnly();
             $this->move();
             $this->animateWater();
+            $this->updateMobs();
 
             // block selection: number keys 1-9 + mouse wheel
             for ($n = 1; $n <= count(self::HOTBAR); $n++) {
@@ -835,24 +1000,39 @@ final class MinecraftController extends Controller
         $cx = (int) ($w / 2);
         $cy = (int) ($e->xGraphicsHeight() / 2);
 
+        // crosshair (two lines)
         $e->xColor(255, 255, 255);
-        $e->xText($cx, $cy, '+', 1, 1);
+        $e->xLine($cx - 9, $cy, $cx + 9, $cy);
+        $e->xLine($cx, $cy - 9, $cx, $cy + 9);
 
         $e->xColor(255, 255, 0);
         $e->xText(10, 10, 'FPS: ' . $e->xGetFPS());
         $e->xColor(220, 220, 220);
-        $e->xText(10, 30, 'Blocks: ' . count($this->cell));
+        $e->xText(10, 30, 'Blocks: ' . count($this->cell) . '   Sheep: ' . count($this->mobs));
         $e->xText(10, 50, 'Mode: ' . ($this->fly ? 'Fly (F)' : 'Walk (F)'));
         $e->xText(10, 70, $hasTarget ? 'LMB destroy / RMB place' : 'no target');
         $e->xText(10, 90, 'Esc: menu');
 
-        // hotbar
-        $line = '';
+        // visual hotbar: block icons with a selection frame
+        $slots = count(self::HOTBAR);
+        $cell = 52; $pad = 4; $iw = 44;
+        $barW = $slots * $cell;
+        $x0 = $cx - (int) ($barW / 2);
+        $y0 = $e->xGraphicsHeight() - $cell - 8;
         foreach (self::HOTBAR as $i => $id) {
-            $name = self::TYPES[$id][0];
-            $line .= ($i === $this->slot) ? "[" . ($i + 1) . ":$name] " : " " . ($i + 1) . ":$name  ";
+            $sx = $x0 + $i * $cell;
+            $e->xColor(20, 20, 20);
+            $e->xRect($sx, $y0, $cell - 2, $cell - 2, 1);             // slot background
+            $e->xDrawImage($this->icon[$id], $sx + $pad, $y0 + $pad);  // block icon
+            if ($i === $this->slot) {
+                $e->xColor(255, 255, 255);
+                $e->xRect($sx - 1, $y0 - 1, $cell, $cell, 0);          // selection frame
+            }
+            $e->xColor(200, 200, 200);
+            $e->xText($sx + 4, $y0 + 2, (string) ($i + 1));            // slot number
         }
+        // selected block name
         $e->xColor(255, 255, 255);
-        $e->xText($cx, $e->xGraphicsHeight() - 28, $line, 1);
+        $e->xText($cx, $y0 - 18, self::TYPES[$this->selectedType()][0], 1);
     }
 }
