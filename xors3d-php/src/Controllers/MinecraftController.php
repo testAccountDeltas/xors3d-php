@@ -379,11 +379,13 @@ final class MinecraftController extends Controller
         $n = $this->wsize;
         $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
 
-        // multi-octave value noise -> rolling hills, mountains and basins (lakes)
+        // multi-octave value noise -> rolling hills, mountains and a few lakes.
+        // Land should dominate: map noise across [SEA-1 .. MAX_H] so most of the
+        // world is above the water line, with occasional low basins as lakes.
         for ($x = 0; $x < $n; $x++) {
             for ($z = 0; $z < $n; $z++) {
-                $f = $this->fbm($x * 0.09, $z * 0.09) / 0.9375;   // 0..1
-                $h = (int) round($f * $f * self::MAX_H);           // bias toward valleys
+                $f = $this->fbm($x * 0.08, $z * 0.08) / 0.9375;   // 0..1, avg ~0.5
+                $h = (int) round((self::SEA - 1) + $f * (self::MAX_H - (self::SEA - 1)));
                 $this->height[$x][$z] = max(0, min(self::MAX_H, $h));
             }
         }
