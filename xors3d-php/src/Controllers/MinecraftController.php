@@ -119,6 +119,8 @@ final class MinecraftController extends Controller
     private bool $onGround = false;
     private int $lastStep = 0;
     private int $mobTimer = 0;
+    private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
+    private int $lastMs = 0;
 
     /** @var array<int,int> */ private array $template = [];
     /** @var array<int,int> */ private array $tex = [];
@@ -390,7 +392,7 @@ final class MinecraftController extends Controller
 
         $lo = $this->px - 70 * self::BLOCK; $hi = $this->px + 70 * self::BLOCK;
         foreach ($this->clouds as &$c) {
-            $c['x'] += $c['sp'];
+            $c['x'] += $c['sp'] * $this->dt;
             if ($c['x'] > $hi) { $c['x'] = $lo; }
             $e->xPositionEntity($c['pivot'], $c['x'], $c['y'], $c['z']);
         }
@@ -772,7 +774,7 @@ final class MinecraftController extends Controller
             }
 
             if ($m['dx'] !== 0.0 || $m['dz'] !== 0.0) {
-                if (!$this->mobTryStep($m, $curG, $spd)) {
+                if (!$this->mobTryStep($m, $curG, $spd * $this->dt)) {
                     // boxed in on all sides: pick a new goal shortly
                     $this->mobPickDir($m);
                     $m['timer'] = mt_rand(20, 50);
@@ -996,6 +998,11 @@ final class MinecraftController extends Controller
                         $a1 = $e->xAddVertex($s, $c1[0], $c1[1], $c1[2], $w, 0);
                         $a2 = $e->xAddVertex($s, $c2[0], $c2[1], $c2[2], $w, $hgt);
                         $a3 = $e->xAddVertex($s, $c3[0], $c3[1], $c3[2], 0, $hgt);
+                        // explicit outward normal (avoids winding-dependent dark faces)
+                        $nrm = [0.0, 0.0, 0.0]; $nrm[$d] = ($c > 0) ? 1.0 : -1.0;
+                        foreach ([$a0, $a1, $a2, $a3] as $vi) {
+                            $e->xVertexNormal($s, $vi, $nrm[0], $nrm[1], $nrm[2]);
+                        }
                         $e->xAddTriangle($s, $a0, $a1, $a2);
                         $e->xAddTriangle($s, $a0, $a2, $a3);
 
@@ -1037,8 +1044,7 @@ final class MinecraftController extends Controller
         $yMax = min(self::Y_MAX, $yMax);
 
         $mesh = $e->xCreateMesh();
-        $this->greedyMesh($mesh, $x0, $z0, $yMax);
-        $e->xUpdateNormals($mesh);
+        $this->greedyMesh($mesh, $x0, $z0, $yMax); // sets its own vertex normals
         $e->xEntityFX($mesh, Constants::FX_DISABLECULLING);
         $e->xEntityPickMode($mesh, 2);
 
@@ -1452,13 +1458,14 @@ final class MinecraftController extends Controller
 
         $moving = $ml > 0.0;
 
+        $dt = $this->dt;
         if ($fly) {
-            $this->px += $mx; $this->py += $my; $this->pz += $mz;
-            if ($e->xKeyDown(Constants::KEY_SPACE))  { $this->py += $spd; }
-            if ($e->xKeyDown(Constants::KEY_LSHIFT)) { $this->py -= $spd; }
+            $this->px += $mx * $dt; $this->py += $my * $dt; $this->pz += $mz * $dt;
+            if ($e->xKeyDown(Constants::KEY_SPACE))  { $this->py += $spd * $dt; }
+            if ($e->xKeyDown(Constants::KEY_LSHIFT)) { $this->py -= $spd * $dt; }
         } else {
-            $this->moveAxisX($mx);
-            $this->moveAxisZ($mz);
+            $this->moveAxisX($mx * $dt);
+            $this->moveAxisZ($mz * $dt);
             $this->applyGravity();
             if ($this->onGround && $e->xKeyHit(Constants::KEY_SPACE)) { $this->vy = self::JUMP; }
             // footsteps
@@ -1496,8 +1503,9 @@ final class MinecraftController extends Controller
 
     private function applyGravity(): void
     {
-        $this->vy -= self::G;
-        $ny = $this->py + $this->vy;
+        $dt = $this->dt;
+        $this->vy -= self::G * $dt;
+        $ny = $this->py + $this->vy * $dt;
         $bx = $this->cellOf($this->px); $bz = $this->cellOf($this->pz);
 
         if ($this->vy <= 0.0) {
@@ -1510,7 +1518,7 @@ final class MinecraftController extends Controller
             }
             $this->onGround = false;
         } else {
-            $hc = $this->cellOf($this->py + self::PH + $this->vy);
+            $hc = $this->cellOf($this->py + self::PH + $this->vy * $dt);
             if ($this->solidCell($bx, $hc, $bz)) { $this->vy = 0.0; return; }
         }
         $this->py = $ny;
@@ -1528,10 +1536,17 @@ final class MinecraftController extends Controller
     private function gameLoop(int $max): void
     {
         $e = $this->e; $h = $this->camH; $frame = 0;
+        $this->lastMs = 0;
 
         while (true) {
             if ($this->closeRequested()) { $this->quit = true; return; }
             if ($max === 0 && $e->xKeyHit(Constants::KEY_ESCAPE)) { return; }
+
+            // frame-time factor so movement/physics are FPS-independent (1.0 == 60 FPS)
+            $now = $e->xMillisecs();
+            $frameMs = $this->lastMs > 0 ? ($now - $this->lastMs) : 16;
+            $this->lastMs = $now;
+            $this->dt = max(0.25, min(3.0, $frameMs / 16.6667));
 
             if ($e->xKeyHit(Constants::KEY_F)) { $this->fly = !$this->fly; $this->vy = 0.0; }
 
@@ -1552,7 +1567,7 @@ final class MinecraftController extends Controller
                 $this->slot = (($this->slot - ($wheel > 0 ? 1 : -1)) % $c + $c) % $c;
                 $this->refreshHand($e);
             }
-            $e->xTurnEntity($this->hand, 0, 1.5, 0);
+            $e->xTurnEntity($this->hand, 0, 1.5 * $this->dt, 0);
             $this->updateSky();
             $this->updateSkyObjects();
 
