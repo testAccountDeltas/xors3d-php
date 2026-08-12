@@ -1413,13 +1413,16 @@ final class MinecraftController extends Controller
     /** Final block type at a cell from the data model (edits over generation). 0 = air. */
     private function solidType(int $x, int $y, int $z): int
     {
+        // solid "bedrock" below the world so the underside of the terrain is never meshed
+        // (no wasted bottom faces you'd only ever see by flying under the map)
+        if ($y < 0) { return 3; }
         $k = "$x,$y,$z";
         if (array_key_exists($k, $this->edits)) {
             $t = $this->edits[$k];
             if ($t === self::DOOR && ($this->doorOpen[$k] ?? false)) { return 0; } // open door = passable
             return $t;
         }
-        if ($y >= 0 && $y <= $this->heightAt($x, $z)) { return $this->groundType($x, $y, $z); }
+        if ($y <= $this->heightAt($x, $z)) { return $this->groundType($x, $y, $z); }
         return 0;
     }
 
