@@ -57,36 +57,60 @@ trait Effects
     }
 
     /**
-     * Reassign the point-light pool to the nearest torches/glowstone around the player.
-     * Intensity fades smoothly with distance (and the light range grows) instead of
-     * cutting off, so lights don't blink out when you walk away.
+     * Bind the point-light pool to the nearest torches/glowstone with STABLE bindings:
+     * a light stays on its source (fading smoothly with distance) rather than being
+     * re-ranked every frame - so lights don't pop/jump as you move. A light is only
+     * re-bound when its source leaves reach or drops out of the nearest set.
      */
     private function updatePointLights(): void
     {
         if ($this->pointLights === []) { return; }
         $e = $this->e; $B = self::BLOCK;
-        $reach = 60.0 * $B; $reach2 = $reach * $reach;   // wider reach than before
+        $reach = 90.0 * $B; $reach2 = $reach * $reach;   // large reach; fade does the cutoff
         $px = $this->px; $py = $this->py; $pz = $this->pz;
-        $near = [];
-        foreach ($this->lightCells as [$x, $y, $z]) {
+
+        // in-range sources with distance, keyed by cell
+        $inRange = []; // key => [d2, wx, wy, wz]
+        foreach ($this->lightCells as $key => [$x, $y, $z]) {
             $wx = $x * $B; $wy = $y * $B; $wz = $z * $B;
             $dx = $wx - $px; $dy = $wy - $py; $dz = $wz - $pz;
             $d2 = $dx * $dx + $dy * $dy + $dz * $dz;
-            if ($d2 < $reach2) { $near[] = [$d2, $wx, $wy, $wz]; }
+            if ($d2 < $reach2) { $inRange[$key] = [$d2, $wx, $wy, $wz]; }
         }
-        sort($near); // nearest first (by squared distance)
+        // the set we want lit = the nearest N
+        $keys = array_keys($inRange);
+        usort($keys, fn($a, $b) => $inRange[$a][0] <=> $inRange[$b][0]);
+        $want = array_slice($keys, 0, count($this->pointLights));
+        $wantSet = array_fill_keys($want, true);
+
+        // keep bindings whose source is still wanted; free the rest
+        $boundKeys = [];
         foreach ($this->pointLights as $i => $l) {
-            if (isset($near[$i])) {
-                [$d2, $wx, $wy, $wz] = $near[$i];
-                $f = max(0.0, 1.0 - sqrt($d2) / $reach);   // 1 near -> 0 at the edge
-                $f = $f * $f;                              // ease-out for a soft falloff
-                $e->xLightColor($l, (int) (255 * $f), (int) (205 * $f), (int) (130 * $f));
-                $e->xLightRange($l, (14.0 + 8.0 * (1.0 - $f)) * $B); // reaches a bit farther as it dims
-                $e->xPositionEntity($l, $wx, $wy + $B * 0.3, $wz);
-                $e->xShowEntity($l);
-            } else {
-                $e->xHideEntity($l);
-            }
+            $k = $this->lightBind[$i] ?? null;
+            if ($k !== null && isset($wantSet[$k])) { $boundKeys[$k] = true; }
+            else { $this->lightBind[$i] = null; }
+        }
+        // assign wanted sources that aren't bound yet to any free light
+        $free = [];
+        foreach ($this->pointLights as $i => $l) { if ($this->lightBind[$i] === null) { $free[] = $i; } }
+        foreach ($want as $k) {
+            if (isset($boundKeys[$k])) { continue; }
+            $i = array_shift($free);
+            if ($i === null) { break; }
+            $this->lightBind[$i] = $k;
+        }
+
+        // apply: fade each bound light by distance, hide unbound ones
+        foreach ($this->pointLights as $i => $l) {
+            $k = $this->lightBind[$i] ?? null;
+            if ($k === null || !isset($inRange[$k])) { $e->xHideEntity($l); continue; }
+            [$d2, $wx, $wy, $wz] = $inRange[$k];
+            $f = max(0.0, 1.0 - sqrt($d2) / $reach);
+            $f = $f * (0.5 + 0.5 * $f);   // gentle ease, stays bright over most of the range
+            $e->xLightColor($l, (int) (255 * $f), (int) (205 * $f), (int) (130 * $f));
+            $e->xLightRange($l, (16.0 + 10.0 * (1.0 - $f)) * $B);
+            $e->xPositionEntity($l, $wx, $wy + $B * 0.3, $wz);
+            $e->xShowEntity($l);
         }
     }
 

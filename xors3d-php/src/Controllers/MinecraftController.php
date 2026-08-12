@@ -243,8 +243,10 @@ final class MinecraftController extends Controller
     /** @var array<string,bool> door cell "x,y,z" => open? */ private array $doorOpen = [];
     /** @var array<string,array{0:int,1:int,2:int}> glowstone cells "x,y,z" => [x,y,z] (light sources) */
     private array $lightCells = [];
-    /** @var int[] pool of dynamic point-light handles reassigned to the nearest torches */
+    /** @var int[] pool of dynamic point-light handles bound to the nearest torches */
     private array $pointLights = [];
+    /** @var array<int,?string> pool index => bound light-source cell key (stable binding) */
+    private array $lightBind = [];
     /** @var array<string,bool> chunks whose trees have been generated */ private array $treeGen = [];
     /** @var array<string,bool> chunk keys touched by the tree gen currently running */ private array $treeSpill = [];
     private bool $trackSpill = false;
@@ -343,14 +345,16 @@ final class MinecraftController extends Controller
         $e->xLightColor($this->moon, 0, 0, 0);
         $e->xAmbientLight(120, 120, 130);
 
-        // pool of point lights reassigned each frame to the nearest torches/glowstone
-        // (real additive glow around the player's lights, works in dark caves at night)
-        for ($i = 0; $i < 5; $i++) {
+        // pool of point lights bound to the nearest torches/glowstone (2 directional +
+        // 6 point = the 8-light fixed-function limit). Stable binding + distance fade
+        // so lights don't pop as you move.
+        for ($i = 0; $i < 6; $i++) {
             $l = $e->xCreateLight(Constants::LIGHT_POINT);
             $e->xLightColor($l, 255, 205, 130);          // warm torchlight
             $e->xLightRange($l, 11.0 * self::BLOCK);
             $e->xHideEntity($l);
             $this->pointLights[] = $l;
+            $this->lightBind[$i] = null;
         }
         $e->xLoadFont('Arial', 14);
 
