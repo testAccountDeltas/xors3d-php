@@ -45,8 +45,11 @@ trait Chunks
             return $colTop[$k] ??= $this->groundTop($ax, $az);
         };
         $lightOf = function (int $ax, int $ay, int $az, int $ftype) use ($topOf): int {
-            if ($ftype === 11) { return 255; }          // glowstone emits
-            return ($ay > $topOf($ax, $az)) ? 255 : 77; // open sky vs shadowed
+            if ($ftype === 11) { return 255; }               // glowstone emits
+            $v = ($ay > $topOf($ax, $az)) ? 255 : 77;        // skylight: open sky vs shadowed
+            $bl = $this->blockLite["$ax,$ay,$az"] ?? 0.0;    // baked glowstone glow
+            if ($bl > 0.0) { $blv = (int) (77 + $bl * 178); if ($blv > $v) { $v = $blv; } }
+            return $v;
         };
 
         for ($d = 0; $d < 3; $d++) {
@@ -141,6 +144,34 @@ trait Chunks
     }
 
     /** Build (or rebuild) one chunk as a single greedy-merged mesh + water. */
+    /**
+     * Bake a block-light field for the chunk region: each glowstone splats a radial
+     * falloff (through-walls, cheap) into $this->blockLite. Used by the mesher to make
+     * torch-lit faces bright in the vertex colours - persistent glow independent of the
+     * runtime point-light count, so building lights never blink out as you walk away.
+     */
+    private function bakeBlockLite(int $x0, int $z0): void
+    {
+        $this->blockLite = [];
+        $R = 7;
+        $xmin = $x0 - $R; $xmax = $x0 + self::CH - 1 + $R;
+        $zmin = $z0 - $R; $zmax = $z0 + self::CH - 1 + $R;
+        foreach ($this->lightCells as [$gx, $gy, $gz]) {
+            if ($gx < $xmin || $gx > $xmax || $gz < $zmin || $gz > $zmax) { continue; }
+            for ($dx = -$R; $dx <= $R; $dx++) {
+                for ($dy = -$R; $dy <= $R; $dy++) {
+                    for ($dz = -$R; $dz <= $R; $dz++) {
+                        $d = sqrt($dx * $dx + $dy * $dy + $dz * $dz);
+                        if ($d > $R) { continue; }
+                        $v = 1.0 - $d / $R;
+                        $k = ($gx + $dx) . ',' . ($gy + $dy) . ',' . ($gz + $dz);
+                        if (!isset($this->blockLite[$k]) || $this->blockLite[$k] < $v) { $this->blockLite[$k] = $v; }
+                    }
+                }
+            }
+        }
+    }
+
     private function buildChunkMesh(int $cx, int $cz): void
     {
         $e = $this->e;
@@ -177,6 +208,7 @@ trait Chunks
         }
         $yMax = min(self::Y_MAX, $yMax);
 
+        $this->bakeBlockLite($x0, $z0);            // glowstone glow baked into vertex colours
         $mesh = $e->xCreateMesh();
         $this->greedyMesh($mesh, $x0, $z0, $yMax); // sets its own vertex normals + double winding
         $e->xEntityFX($mesh, Constants::FX_VERTEXCOLOR); // use baked skylight vertex colours

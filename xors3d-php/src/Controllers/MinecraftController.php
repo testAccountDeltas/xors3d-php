@@ -239,6 +239,8 @@ final class MinecraftController extends Controller
     /** @var array<string,bool> door cell "x,y,z" => open? */ private array $doorOpen = [];
     /** @var array<string,array{0:int,1:int,2:int}> glowstone cells "x,y,z" => [x,y,z] (light sources) */
     private array $lightCells = [];
+    /** @var array<string,float> per-chunk-build baked block-light field "x,y,z" => 0..1 */
+    private array $blockLite = [];
     /** @var int[] pool of dynamic point-light handles bound to the nearest torches */
     private array $pointLights = [];
     /** @var array<int,?string> pool index => bound light-source cell key (stable binding) */
