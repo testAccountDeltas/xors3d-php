@@ -145,6 +145,10 @@ final class MinecraftController extends Controller
     /** @var array<int,string> mesh handle => chunk key (for picking) */ private array $meshCk = [];
     private int $streamCX = PHP_INT_MAX;
     private int $streamCZ = PHP_INT_MAX;
+    /** @var array<string,bool> chunks wanted but not yet built (budgeted load queue) */
+    private array $loadQ = [];
+    /** @var array<string,bool> loaded chunks pending a rebuild (e.g. snow settle/melt) */
+    private array $rebuildQ = [];
     private float $originX = 0.0;   // player home (world units), for mobs/backdrop
     private float $originZ = 0.0;
 
@@ -290,7 +294,9 @@ final class MinecraftController extends Controller
         $this->cam->reset();
         $this->e->xPositionEntity($this->camH, $this->px, $this->py + self::EYE, $this->pz);
         $this->streamCX = PHP_INT_MAX;              // force streaming refresh
-        $this->updateStreaming($this->px, $this->pz); // build the world around spawn
+        $this->updateStreaming($this->px, $this->pz); // queue the world around spawn
+        $this->processStreaming(12, 0);            // build just the near ring now (ground under
+                                                   // the player); the rest streams in per-frame
         $this->clearMobs();                        // sheep re-stream around the new spot
         $this->mobTimer = 0;
         $seed = min(4, (int) $this->settings['mobs']);
@@ -1332,13 +1338,10 @@ final class MinecraftController extends Controller
         if (isset($this->loaded["$cx,$cz"])) { $this->buildChunkMesh($cx, $cz); }
     }
 
-    /** Rebuild every currently-loaded chunk mesh (e.g. when snow settles or melts). */
+    /** Queue every loaded chunk for a rebuild (snow settle/melt), spread over frames. */
     private function remeshLoaded(): void
     {
-        foreach (array_keys($this->loaded) as $ck) {
-            [$cx, $cz] = array_map('intval', explode(',', $ck));
-            $this->buildChunkMesh($cx, $cz);
-        }
+        foreach (array_keys($this->loaded) as $ck) { $this->rebuildQ[$ck] = true; }
     }
 
     private function unloadChunk(int $cx, int $cz): void
@@ -1353,7 +1356,12 @@ final class MinecraftController extends Controller
         unset($this->chunk[$ck], $this->chunkMesh[$ck], $this->loaded[$ck]);
     }
 
-    /** Load chunks within render distance of ($wx,$wz); unload the rest. */
+    /**
+     * Decide which chunks are wanted around ($wx,$wz): queue missing ones for budgeted
+     * loading and unload the far ones. The actual mesh building is drained a few chunks
+     * per frame by {@see processStreaming()} so crossing a chunk border never builds a
+     * whole ring in one frame (which caused brief freezes despite high average FPS).
+     */
     private function updateStreaming(float $wx, float $wz): void
     {
         $pcx = $this->cdiv($this->cellOf($wx));
@@ -1366,14 +1374,64 @@ final class MinecraftController extends Controller
 
         for ($cx = $pcx - $r; $cx <= $pcx + $r; $cx++) {
             for ($cz = $pcz - $r; $cz <= $pcz + $r; $cz++) {
-                if (!isset($this->loaded["$cx,$cz"])) { $this->loadChunk($cx, $cz); }
+                $ck = "$cx,$cz";
+                if (!isset($this->loaded[$ck])) { $this->loadQ[$ck] = true; }
             }
+        }
+        // drop queued chunks that drifted out of range, and unload far loaded chunks
+        foreach (array_keys($this->loadQ) as $ck) {
+            [$cx, $cz] = explode(',', $ck);
+            if (abs((int) $cx - $pcx) > $u || abs((int) $cz - $pcz) > $u) { unset($this->loadQ[$ck]); }
         }
         foreach (array_keys($this->loaded) as $ck) {
             [$cx, $cz] = explode(',', $ck);
             if (abs((int) $cx - $pcx) > $u || abs((int) $cz - $pcz) > $u) {
                 $this->unloadChunk((int) $cx, (int) $cz);
             }
+        }
+    }
+
+    /**
+     * Build up to $load queued chunks (nearest to the player first) and rebuild up to
+     * $rebuild pending chunks this frame. Keeps per-frame work bounded => no hitches.
+     */
+    private function processStreaming(int $load, int $rebuild): void
+    {
+        if ($this->loadQ !== [] && $load > 0) {
+            $pcx = $this->streamCX; $pcz = $this->streamCZ;
+            $keys = array_keys($this->loadQ);
+            usort($keys, function (string $a, string $b) use ($pcx, $pcz): int {
+                [$ax, $az] = explode(',', $a); [$bx, $bz] = explode(',', $b);
+                $da = ((int) $ax - $pcx) ** 2 + ((int) $az - $pcz) ** 2;
+                $db = ((int) $bx - $pcx) ** 2 + ((int) $bz - $pcz) ** 2;
+                return $da <=> $db;
+            });
+            foreach ($keys as $ck) {
+                if ($load-- <= 0) { break; }
+                unset($this->loadQ[$ck]);
+                if (!isset($this->loaded[$ck])) {
+                    [$cx, $cz] = explode(',', $ck);
+                    $this->loadChunk((int) $cx, (int) $cz);
+                }
+            }
+        }
+        if ($this->rebuildQ !== [] && $rebuild > 0) {
+            foreach (array_keys($this->rebuildQ) as $ck) {
+                if ($rebuild-- <= 0) { break; }
+                unset($this->rebuildQ[$ck]);
+                if (isset($this->loaded[$ck])) {
+                    [$cx, $cz] = explode(',', $ck);
+                    $this->buildChunkMesh((int) $cx, (int) $cz);
+                }
+            }
+        }
+    }
+
+    /** Drain the whole load/rebuild queue now (menu backdrop, screenshots). */
+    private function flushStreaming(): void
+    {
+        while ($this->loadQ !== [] || $this->rebuildQ !== []) {
+            $this->processStreaming(64, 64);
         }
     }
 
@@ -1570,8 +1628,9 @@ final class MinecraftController extends Controller
         $actions = ['play', 'new', 'save', 'load', 'settings', 'quit'];
         $sel = 0; $e = $this->e;
         $this->streamCX = PHP_INT_MAX;
-        $this->updateStreaming($this->originX, $this->originZ); // stream the area around the map centre
+        $this->updateStreaming($this->originX, $this->originZ); // queue the area around the map centre
         $shot = getenv('CRAFT_MENUSHOT'); $sf = 0;
+        if ($shot) { $this->flushStreaming(); } // screenshots need the backdrop present at once
 
         while (true) {
             if ($this->closeRequested()) { $this->quit = true; return 'quit'; }
@@ -1673,6 +1732,7 @@ final class MinecraftController extends Controller
     private function orbitBackdrop(): void
     {
         $e = $this->e;
+        $this->processStreaming(6, 2); // keep the backdrop filling in without a freeze
         $mid = $this->originX;
         $t = $e->xMillisecs() / 4000.0;
         $r = (int) $this->settings["renderDist"] * self::BLOCK * 0.5;
@@ -1860,6 +1920,7 @@ final class MinecraftController extends Controller
             $this->dt = $frameDt; // restore real frame dt for per-frame visuals below
 
             $this->updateStreaming($this->px, $this->pz);
+            $this->processStreaming(2, 2); // budgeted: build a few chunks/frame, no hitches
             $this->animateWater();
             $this->streamMobs();
             $this->updateMobs();
