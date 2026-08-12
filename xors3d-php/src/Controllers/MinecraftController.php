@@ -10,6 +10,7 @@ use Xors3D\Controllers\Craft\Chunks;
 use Xors3D\Controllers\Craft\Effects;
 use Xors3D\Controllers\Craft\Furnace;
 use Xors3D\Controllers\Craft\Inventory;
+use Xors3D\Controllers\Craft\Minimap;
 use Xors3D\Controllers\Craft\Mobs;
 use Xors3D\Controllers\Craft\Player;
 use Xors3D\Controllers\Craft\Sky;
@@ -60,6 +61,7 @@ final class MinecraftController extends Controller
     use Storage;    // chest inventories + transfer menu (src/Controllers/Craft/)
     use Bed;        // sleep (B) at night near a bed to skip to morning (src/Controllers/Craft/)
     use Furnace;    // smelting menu (sand->glass etc) with fuel (src/Controllers/Craft/)
+    use Minimap;    // top-right surface minimap (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -163,7 +165,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 48,
-        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1,
+        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -175,6 +177,7 @@ final class MinecraftController extends Controller
         ['key' => 'daynight',    'label' => 'Day/night cycle',   'type' => 'bool'],
         ['key' => 'weather',     'label' => 'Weather (rain/snow)', 'type' => 'bool'],
         ['key' => 'survival',    'label' => 'Survival (health)',  'type' => 'bool'],
+        ['key' => 'minimap',     'label' => 'Minimap',           'type' => 'bool'],
         ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
         ['key' => 'godrays',     'label' => 'Sun rays (shader)', 'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
@@ -532,6 +535,7 @@ final class MinecraftController extends Controller
             $this->renderBloom();
             $this->drawHud($e, $hasTarget);
             $this->drawVitals($e);
+            $this->drawMinimap($e);
 
             if ($max > 0 && $frame + 1 >= $max && ($shot = getenv('CRAFT_SHOT'))) {
                 $e->xSaveBuffer($e->xBackBuffer(), $shot);
