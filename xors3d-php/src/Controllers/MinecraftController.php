@@ -1539,7 +1539,7 @@ final class MinecraftController extends Controller
     private function gameLoop(int $max): void
     {
         $e = $this->e; $h = $this->camH; $frame = 0;
-        $this->lastMs = 0;
+        $this->lastMs = PHP_INT_MIN;
 
         while (true) {
             if ($this->closeRequested()) { $this->quit = true; return; }
@@ -1547,10 +1547,14 @@ final class MinecraftController extends Controller
 
             // frame-time factor so movement/physics are FPS-independent (1.0 == 60 FPS).
             // No lower clamp: at high FPS dt must be small; only cap large hitches.
+            // xMillisecs() is a SIGNED 32-bit ms counter and goes negative after
+            // ~24.8 days of uptime, so never test it with "> 0"; use a sentinel for
+            // the first frame and treat a negative/huge delta (wrap or hitch) as one frame.
             $now = $e->xMillisecs();
-            $frameMs = $this->lastMs > 0 ? ($now - $this->lastMs) : 16;
+            $frameMs = ($this->lastMs === PHP_INT_MIN) ? 16 : ($now - $this->lastMs);
             $this->lastMs = $now;
-            $this->dt = min(3.0, max(0.0, $frameMs) / 16.6667);
+            if ($frameMs < 0 || $frameMs > 250) { $frameMs = 16; }
+            $this->dt = min(3.0, $frameMs / 16.6667);
 
             if ($e->xKeyHit(Constants::KEY_F)) { $this->fly = !$this->fly; $this->vy = 0.0; }
 
