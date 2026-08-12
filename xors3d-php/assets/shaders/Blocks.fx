@@ -74,7 +74,7 @@ float4 PS(VOut IN) : COLOR {
     float3 col = t.rgb * IN.Col.rgb * light;  // baked AO/skylight * soft day/night light
     // torch/glowstone emission (second uv set): warm light added on top, independent of
     // time of day so building lights stay lit at night.
-    col += t.rgb * saturate(IN.Emit) * float3(1.0, 0.80, 0.48) * 1.35;
+    col += t.rgb * saturate(IN.Emit) * float3(1.0, 0.80, 0.48) * 2.1;
 
     float f = saturate((IN.Fog - FogRange.x) / (FogRange.y - FogRange.x));
     col = lerp(col, FogClr, f);

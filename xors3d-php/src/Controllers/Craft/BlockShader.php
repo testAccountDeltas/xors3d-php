@@ -80,11 +80,13 @@ trait BlockShader
         // wetness (overcast) mutes the sun and greys the ambient a little
         $wet = 1.0 - 0.45 * max(0.0, min(1.0, $this->wetness));
 
-        $sunc = $lerp([0.16, 0.19, 0.30], [1.0, 0.95, 0.82], $d);
-        $sunc = [$sunc[0] * 0.62 * $wet, $sunc[1] * 0.62 * $wet, $sunc[2] * 0.62 * $wet];
-        $sky  = $lerp([0.13, 0.15, 0.23], [0.54, 0.62, 0.74], $d);
-        $gnd  = $lerp([0.08, 0.09, 0.13], [0.42, 0.39, 0.34], $d);
-        $fog  = $lerp([0.06, 0.08, 0.16], [0.45, 0.72, 0.96], $d);
+        // Night keeps a visible moonlit floor (the old fixed-function pipeline had a flat
+        // ~0.47 ambient, so pure-black night felt like a regression).
+        $sunc = $lerp([0.30, 0.36, 0.52], [1.0, 0.95, 0.82], $d);   // moon -> sun
+        $sunc = [$sunc[0] * 0.7 * $wet, $sunc[1] * 0.7 * $wet, $sunc[2] * 0.7 * $wet];
+        $sky  = $lerp([0.30, 0.34, 0.44], [0.54, 0.62, 0.74], $d);
+        $gnd  = $lerp([0.20, 0.22, 0.30], [0.42, 0.39, 0.34], $d);
+        $fog  = $lerp([0.09, 0.12, 0.22], [0.45, 0.72, 0.96], $d);
 
         $dist = (float) ((int) $this->settings['renderDist']) * self::BLOCK;
         $this->bfx = [
