@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Xors3D\Controllers;
 
+use Xors3D\Controllers\Craft\Inventory;
 use Xors3D\Controllers\Craft\Mobs;
 use Xors3D\Controllers\Craft\TerrainGen;
 use Xors3D\Controllers\Craft\Weather;
@@ -34,6 +35,7 @@ final class MinecraftController extends Controller
     use TerrainGen; // procedural terrain/noise/caves/ores (src/Controllers/Craft/)
     use Mobs;       // passive animals + world-query helpers (src/Controllers/Craft/)
     use Weather;    // precipitation, overcast, snow settle, puddles (src/Controllers/Craft/)
+    use Inventory;  // item counts, drops, crafting recipes + menu (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -662,6 +664,7 @@ final class MinecraftController extends Controller
     private function generateData(): void
     {
         $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
+        $this->starterKit();
         $this->buildStructures();
     }
 
@@ -1510,6 +1513,7 @@ final class MinecraftController extends Controller
         $type = $this->solidType($x, $y, $z);
         if ($type <= 0) { return; }
         $this->spawnBreakParticles($x, $y, $z, $type);
+        $this->invAdd($this->dropFor($type)); // mined block drops into the inventory
         $this->setEdit($x, $y, $z, 0); // record removal in the data model
         $this->play($this->sndBreak);
         $this->rebuildAround($x, $z);
@@ -1519,6 +1523,8 @@ final class MinecraftController extends Controller
     {
         if ($y < 0 || $y > self::Y_MAX) { return; }
         if ($this->solidType($x, $y, $z) > 0) { return; }
+        if ($this->invCount($type) <= 0) { return; }  // need the block in the inventory
+        $this->invAdd($type, -1);
         $this->setEdit($x, $y, $z, $type);
         if ($type === self::DOOR) {                         // doors are 2 blocks tall
             if ($this->solidType($x, $y + 1, $z) <= 0) { $this->setEdit($x, $y + 1, $z, self::DOOR); }
@@ -1560,7 +1566,7 @@ final class MinecraftController extends Controller
     {
         // infinite world: only the seed + player edits + which chunks have trees.
         // Terrain/ores regenerate procedurally from the seed.
-        $data = ['seed' => $this->seed, 'edits' => $this->edits, 'treeGen' => array_keys($this->treeGen)];
+        $data = ['seed' => $this->seed, 'edits' => $this->edits, 'treeGen' => array_keys($this->treeGen), 'inv' => $this->inv];
         $ok = @file_put_contents($this->worldFile(), json_encode($data)) !== false;
         $this->status = $ok ? 'World saved.' : 'Save failed.';
     }
@@ -1585,6 +1591,9 @@ final class MinecraftController extends Controller
             [$x, $y, $z] = array_map('intval', explode(',', (string) $k));
             $this->setEdit($x, $y, $z, (int) $type);
         }
+        $this->inv = [];
+        foreach (($d['inv'] ?? []) as $t => $c) { $this->inv[(int) $t] = (int) $c; }
+        if ($this->inv === []) { $this->starterKit(); } // older saves had no inventory
         $this->status = 'World loaded.'; // chunks stream in around the player on Play
     }
 
@@ -1942,7 +1951,7 @@ final class MinecraftController extends Controller
             }
 
             // C opens the crafting / block menu (assigns a block to the active slot)
-            if ($e->xKeyHit(Constants::KEY_C)) { $this->craftingMenu(); }
+            if ($e->xKeyHit(Constants::KEY_C)) { $this->craftMenu(); }
 
             if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
@@ -1986,6 +1995,7 @@ final class MinecraftController extends Controller
         $y0 = $e->xGraphicsHeight() - $cell - 8;
         foreach ($this->hotbar as $i => $id) {
             $sx = $x0 + $i * $cell;
+            $cnt = $this->invCount($id);
             $e->xColor(20, 20, 20);
             $e->xRect($sx, $y0, $cell - 2, $cell - 2, 1);             // slot background
             $e->xDrawImage($this->icon[$id], $sx + $pad, $y0 + $pad);  // block icon
@@ -1995,73 +2005,13 @@ final class MinecraftController extends Controller
             }
             $e->xColor(200, 200, 200);
             $e->xText($sx + 4, $y0 + 2, (string) ($i + 1));            // slot number
+            // held count (bottom-right), red when empty
+            if ($cnt > 0) { $e->xColor(255, 255, 255); } else { $e->xColor(210, 90, 90); }
+            $e->xText($sx + $cell - 22, $y0 + $cell - 18, (string) $cnt);
         }
         // selected block name
         $e->xColor(255, 255, 255);
         $e->xText($cx, $y0 - 18, self::TYPES[$this->selectedType()][0], 1);
     }
 
-    /**
-     * Full block/crafting menu: a grid of every placeable block. Arrows/mouse move the
-     * cursor, Enter/LMB assigns the block to the active hotbar slot. C/Esc closes.
-     */
-    private function craftingMenu(): void
-    {
-        $e = $this->e;
-        $ids = $this->craftable();
-        $cols = 8; $cell = 64; $pad = 8;
-        $sel = array_search($this->selectedType(), $ids, true);
-        if ($sel === false) { $sel = 0; }
-
-        while (true) {
-            if ($this->closeRequested()) { $this->quit = true; return; }
-            if ($e->xKeyHit(Constants::KEY_ESCAPE) || $e->xKeyHit(Constants::KEY_C)) { return; }
-            $n = count($ids);
-            if ($e->xKeyHit(Constants::KEY_LEFT))  { $sel = ($sel + $n - 1) % $n; }
-            if ($e->xKeyHit(Constants::KEY_RIGHT)) { $sel = ($sel + 1) % $n; }
-            if ($e->xKeyHit(Constants::KEY_UP))    { $sel = ($sel + $n - $cols) % $n; }
-            if ($e->xKeyHit(Constants::KEY_DOWN))  { $sel = ($sel + $cols) % $n; }
-
-            $w = $e->xGraphicsWidth(); $gh = $e->xGraphicsHeight();
-            $rows = (int) ceil($n / $cols);
-            $gw = $cols * $cell; $ghgt = $rows * $cell;
-            $gx = (int) (($w - $gw) / 2); $gy = (int) (($gh - $ghgt) / 2) + 10;
-
-            // mouse hover + click to pick
-            $mx = $e->xMouseX(); $my = $e->xMouseY();
-            if ($mx >= $gx && $mx < $gx + $gw && $my >= $gy && $my < $gy + $ghgt) {
-                $hi = (int) (($my - $gy) / $cell) * $cols + (int) (($mx - $gx) / $cell);
-                if ($hi >= 0 && $hi < $n) { $sel = $hi; if ($e->xMouseHit(1)) { $this->applyCraftPick($ids[$sel]); return; } }
-            }
-            if ($e->xKeyHit(Constants::KEY_RETURN)) { $this->applyCraftPick($ids[$sel]); return; }
-
-            // dark modal background + panel
-            $e->xRenderWorld();
-            $e->xColor(12, 14, 22); $e->xRect(0, 0, $w, $gh, 1);
-            $e->xColor(230, 230, 240);
-            $e->xText((int) ($w / 2), $gy - 46, 'C R A F T   -   pick a block', 1);
-            $e->xColor(170, 175, 190);
-            $e->xText((int) ($w / 2), $gy - 26, 'Arrows/Mouse: move    Enter/Click: choose    C/Esc: close', 1);
-
-            foreach ($ids as $i => $id) {
-                $r = intdiv($i, $cols); $c = $i % $cols;
-                $sx = $gx + $c * $cell; $sy = $gy + $r * $cell;
-                $e->xColor(30, 32, 40); $e->xRect($sx, $sy, $cell - 3, $cell - 3, 1);
-                $e->xDrawImage($this->icon[$id], $sx + $pad, $sy + $pad);
-                if ($i === $sel) { $e->xColor(255, 235, 120); $e->xRect($sx - 1, $sy - 1, $cell, $cell, 0); }
-            }
-            // name of the highlighted block
-            $e->xColor(255, 255, 255);
-            $e->xText((int) ($w / 2), $gy + $ghgt + 12, self::TYPES[$ids[$sel]][0], 1);
-
-            $e->xFlip();
-        }
-    }
-
-    /** Put the chosen block into the active hotbar slot and refresh the held item. */
-    private function applyCraftPick(int $id): void
-    {
-        $this->hotbar[$this->slot] = $id;
-        $this->refreshHand($this->e);
-    }
 }
