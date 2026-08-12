@@ -33,7 +33,8 @@ final class MinecraftController extends Controller
     private const MAX_H = 22;
     private const SNOW  = 16;
     private const SEA   = 4;
-    private const Y_MAX = 48;
+    private const Y_MAX = 140;  // mesh height cap (chunks only mesh up to their real
+                                // content height, so this only affects tall structures)
     private const BLOCK = 2.0;
     private const CH    = 8;      // chunk size (columns) for render-distance culling
 
@@ -837,18 +838,23 @@ final class MinecraftController extends Controller
         return $cache[$name] = (is_array($d) ? $d : null);
     }
 
-    /** Level a flat grass pad and stamp a converted blueprint with its min-corner at (ox,base,oz). */
-    private function placeStruct(string $name, int $ox, int $base, int $oz): void
+    /**
+     * Stamp a converted blueprint with its min-corner at (ox, base+1, oz). When $level is
+     * true a flat grass pad is levelled under it (for ground buildings); when false the
+     * blocks are placed as-is (for floating set pieces like the sky island).
+     */
+    private function placeStruct(string $name, int $ox, int $base, int $oz, bool $level = true): void
     {
         $s = $this->loadStruct($name);
         if ($s === null) { return; }
-        $w = (int) $s['w']; $d = (int) $s['d'];
-        // level a pad (footprint + 1 border): dirt/grass floor, hills above cut away
-        for ($x = $ox - 1; $x <= $ox + $w; $x++) {
-            for ($z = $oz - 1; $z <= $oz + $d; $z++) {
-                $this->setEdit($x, $base - 1, $z, 2);
-                $this->setEdit($x, $base, $z, 1);
-                for ($y = $base + 1; $y <= $base + 12; $y++) { $this->setEdit($x, $y, $z, 0); }
+        if ($level) {
+            $w = (int) $s['w']; $d = (int) $s['d'];
+            for ($x = $ox - 1; $x <= $ox + $w; $x++) {
+                for ($z = $oz - 1; $z <= $oz + $d; $z++) {
+                    $this->setEdit($x, $base - 1, $z, 2);
+                    $this->setEdit($x, $base, $z, 1);
+                    for ($y = $base + 1; $y <= $base + 12; $y++) { $this->setEdit($x, $y, $z, 0); }
+                }
             }
         }
         foreach ($s['blocks'] as [$dx, $dy, $dz, $t]) {
@@ -892,6 +898,15 @@ final class MinecraftController extends Controller
         // lamp posts around the central plaza for night-time light
         foreach ([[-8, -8], [8, -8], [-8, 8], [8, 8], [0, -10], [0, 10]] as [$lx, $lz]) {
             $this->lampPost($ox + $lx, $base, $oz + $lz);
+        }
+
+        // a giant floating island in the sky over the village (scenic set piece)
+        $isl = $this->loadStruct('island');
+        if ($isl !== null) {
+            $floatY = $base + 40; // bottom of the island, high above the plaza
+            $ix = $ox - (int) ((int) $isl['w'] / 2) - 20; // offset to one side
+            $iz = $oz - (int) ((int) $isl['d'] / 2);
+            $this->placeStruct('island', $ix, $floatY, $iz, false);
         }
     }
 
