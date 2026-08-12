@@ -36,6 +36,27 @@ trait Chunks
         $surf = [];
         $snowTop = $this->snowOn; // render upward ground faces as snow while it lies
 
+        // Sample the whole chunk volume (with a 1-cell border) ONCE into a flat array,
+        // then read from it below. solidType() is comparatively expensive (edits lookup +
+        // per-cell cave 3D-noise = 8 sin calls); the mesher would otherwise query each
+        // cell up to 6x (as a neighbour from every face direction), re-running that noise
+        // each time. Sampling once removes those redundant calls - the big win against
+        // the micro-freeze when a chunk builds mid-flight.
+        $xmin = $x0 - 1; $ymin = -1; $zmin = $z0 - 1;
+        $nyv = ($yMax + 1) - $ymin + 1; $nzv = ($z0 + self::CH) - $zmin + 1;
+        $vol = [];
+        $vi = 0;
+        for ($vx = $xmin; $vx <= $x0 + self::CH; $vx++) {
+            for ($vy = $ymin; $vy <= $yMax + 1; $vy++) {
+                for ($vz = $zmin; $vz <= $z0 + self::CH; $vz++) {
+                    $vol[$vi++] = $this->solidType($vx, $vy, $vz);
+                }
+            }
+        }
+        $st = static function (int $x, int $y, int $z) use ($vol, $xmin, $ymin, $zmin, $nyv, $nzv): int {
+            return $vol[(($x - $xmin) * $nyv + ($y - $ymin)) * $nzv + ($z - $zmin)];
+        };
+
         // baked skylight: a face is bright if the air cell it faces sees open sky, dark
         // otherwise (caves / under overhangs / indoors). Glowstone always glows. The
         // value is a vertex-colour multiplier on top of the dynamic day/night lighting.
@@ -65,10 +86,10 @@ trait Chunks
                     for ($xu = 0; $xu < $du; $xu++) {
                         $pa = [0, 0, 0]; $pa[$d] = $xd; $pa[$u] = $xu; $pa[$v] = $xv;
                         $ax = $off[0] + $pa[0]; $ay = $off[1] + $pa[1]; $az = $off[2] + $pa[2];
-                        $a = $this->solidType($ax, $ay, $az);
+                        $a = $st($ax, $ay, $az);
                         $pb = $pa; $pb[$d] = $xd + 1;
                         $bx = $off[0] + $pb[0]; $by = $off[1] + $pb[1]; $bz = $off[2] + $pb[2];
-                        $b = $this->solidType($bx, $by, $bz);
+                        $b = $st($bx, $by, $bz);
                         // glass (10) is transparent: it never hides the block behind it, so
                         // its neighbours still draw their faces and you can see through windows.
                         $oa = ($a > 0 && $a !== 10);   // a is opaque
@@ -154,20 +175,28 @@ trait Chunks
     {
         $this->blockLite = [];
         $R = 7;
-        $xmin = $x0 - $R; $xmax = $x0 + self::CH - 1 + $R;
-        $zmin = $z0 - $R; $zmax = $z0 + self::CH - 1 + $R;
-        foreach ($this->lightCells as [$gx, $gy, $gz]) {
-            if ($gx < $xmin || $gx > $xmax || $gz < $zmin || $gz > $zmax) { continue; }
+        // Precompute the radial falloff kernel ONCE (offset + intensity for every cell
+        // within R): each light source is then just a cheap splat with no per-cell sqrt.
+        static $kernel = null;
+        if ($kernel === null) {
+            $kernel = [];
             for ($dx = -$R; $dx <= $R; $dx++) {
                 for ($dy = -$R; $dy <= $R; $dy++) {
                     for ($dz = -$R; $dz <= $R; $dz++) {
                         $d = sqrt($dx * $dx + $dy * $dy + $dz * $dz);
                         if ($d > $R) { continue; }
-                        $v = 1.0 - $d / $R;
-                        $k = ($gx + $dx) . ',' . ($gy + $dy) . ',' . ($gz + $dz);
-                        if (!isset($this->blockLite[$k]) || $this->blockLite[$k] < $v) { $this->blockLite[$k] = $v; }
+                        $kernel[] = [$dx, $dy, $dz, 1.0 - $d / $R];
                     }
                 }
+            }
+        }
+        $xmin = $x0 - $R; $xmax = $x0 + self::CH - 1 + $R;
+        $zmin = $z0 - $R; $zmax = $z0 + self::CH - 1 + $R;
+        foreach ($this->lightCells as [$gx, $gy, $gz]) {
+            if ($gx < $xmin || $gx > $xmax || $gz < $zmin || $gz > $zmax) { continue; }
+            foreach ($kernel as [$dx, $dy, $dz, $v]) {
+                $k = ($gx + $dx) . ',' . ($gy + $dy) . ',' . ($gz + $dz);
+                if (!isset($this->blockLite[$k]) || $this->blockLite[$k] < $v) { $this->blockLite[$k] = $v; }
             }
         }
     }
