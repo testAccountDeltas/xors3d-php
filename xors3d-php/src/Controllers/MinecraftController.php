@@ -189,6 +189,8 @@ final class MinecraftController extends Controller
     private int $puddleTpl = 0;     // thin water-slab template for rain puddles
     /** @var array<int,array<string,int|float>> puddle pool: [ent, x, z, placed] */
     private array $puddles = [];
+    /** @var array<int,array<string,int|float>> block-break particle bursts */
+    private array $particles = [];
     /** @var array<int,int> hotbar type id => 2D icon image handle */
     private array $icon = [];
     /** @var array<string,int> mob part textures */
@@ -1217,15 +1219,16 @@ final class MinecraftController extends Controller
         $defs = $this->mobDefs();
         $def = $defs[$species] ?? $defs['sheep'];
         $tex = $this->mobTex['wool']; // neutral fuzzy base, tinted per part
+        $baby = (mt_rand(0, 4) === 0) ? 0.55 : 1.0;   // ~20% are babies (scaled down)
         $pivot = $e->xCreatePivot();
         $parts = [];
         foreach ($def['parts'] as [$w, $h, $d, $col, $ox, $oy, $oz]) {
             $c = $e->xCreateCube();
-            $e->xScaleEntity($c, $this->scale * $w, $this->scale * $h, $this->scale * $d);
+            $e->xScaleEntity($c, $this->scale * $w * $baby, $this->scale * $h * $baby, $this->scale * $d * $baby);
             $e->xEntityTexture($c, $tex);
             $e->xEntityColor($c, $col[0], $col[1], $col[2]);
             $e->xEntityParent($c, $pivot);
-            $e->xPositionEntity($c, $ox * $B, $oy * $B, $oz * $B, 0);
+            $e->xPositionEntity($c, $ox * $B * $baby, $oy * $B * $baby, $oz * $B * $baby, 0);
             $parts[] = $c;
         }
         $e->xPositionEntity($pivot, $wx, $this->terrainTopY($wx, $wz), $wz);
@@ -1328,6 +1331,48 @@ final class MinecraftController extends Controller
         unset($m);
     }
 
+    /** Spawn a small burst of textured cube shards when a block is broken. */
+    private function spawnBreakParticles(int $x, int $y, int $z, int $type): void
+    {
+        $e = $this->e; $B = self::BLOCK;
+        $tex = $this->tex[$type] ?? 0;
+        if ($tex === 0) { return; }
+        $cx = $x * $B; $cy = $y * $B; $cz = $z * $B;
+        for ($i = 0; $i < 7; $i++) {
+            $c = $e->xCreateCube();
+            $s = $this->scale * (0.12 + mt_rand(0, 8) / 100.0);
+            $e->xScaleEntity($c, $s, $s, $s);
+            $e->xEntityTexture($c, $tex);
+            $ox = (mt_rand(-40, 40) / 100.0) * $B; $oy = (mt_rand(-30, 40) / 100.0) * $B; $oz = (mt_rand(-40, 40) / 100.0) * $B;
+            $e->xPositionEntity($c, $cx + $ox, $cy + $oy, $cz + $oz);
+            $this->particles[] = [
+                'ent' => $c, 'x' => $cx + $ox, 'y' => $cy + $oy, 'z' => $cz + $oz,
+                'vx' => (mt_rand(-15, 15) / 100.0) * $B, 'vy' => (mt_rand(15, 38) / 100.0) * $B,
+                'vz' => (mt_rand(-15, 15) / 100.0) * $B, 'life' => mt_rand(18, 30),
+            ];
+        }
+        // cap the pool: drop the oldest bursts if it grows too large
+        while (count($this->particles) > 140) {
+            $p = array_shift($this->particles);
+            $e->xFreeEntity($p['ent']);
+        }
+    }
+
+    /** Advance and expire block-break particles (gravity + fade to removal). */
+    private function updateParticles(): void
+    {
+        if ($this->particles === []) { return; }
+        $e = $this->e; $dt = $this->dt;
+        foreach ($this->particles as $i => &$p) {
+            $p['vy'] -= self::G * 0.6 * $dt;
+            $p['x'] += $p['vx'] * $dt; $p['y'] += $p['vy'] * $dt; $p['z'] += $p['vz'] * $dt;
+            $p['life'] -= $dt;
+            if ($p['life'] <= 0) { $e->xFreeEntity($p['ent']); unset($this->particles[$i]); continue; }
+            $e->xPositionEntity($p['ent'], $p['x'], $p['y'], $p['z']);
+        }
+        unset($p);
+    }
+
     private function clearMobs(): void
     {
         foreach ($this->mobs as $m) {
@@ -1400,6 +1445,31 @@ final class MinecraftController extends Controller
     {
         $h = sin($x * 127.1 + $y * 311.7 + $z * 74.7 + $this->seed) * 43758.5453;
         return $h - floor($h);
+    }
+
+    /** Smooth 3D value noise (0..1) via trilinear interpolation of hash3 lattice. */
+    private function vnoise3(float $x, float $y, float $z): float
+    {
+        $x0 = (int) floor($x); $y0 = (int) floor($y); $z0 = (int) floor($z);
+        $fx = $x - $x0; $fy = $y - $y0; $fz = $z - $z0;
+        $u = $fx * $fx * (3 - 2 * $fx); $v = $fy * $fy * (3 - 2 * $fy); $w = $fz * $fz * (3 - 2 * $fz);
+        $c000 = $this->hash3($x0,     $y0,     $z0);     $c100 = $this->hash3($x0 + 1, $y0,     $z0);
+        $c010 = $this->hash3($x0,     $y0 + 1, $z0);     $c110 = $this->hash3($x0 + 1, $y0 + 1, $z0);
+        $c001 = $this->hash3($x0,     $y0,     $z0 + 1); $c101 = $this->hash3($x0 + 1, $y0,     $z0 + 1);
+        $c011 = $this->hash3($x0,     $y0 + 1, $z0 + 1); $c111 = $this->hash3($x0 + 1, $y0 + 1, $z0 + 1);
+        $x00 = $c000 + ($c100 - $c000) * $u; $x10 = $c010 + ($c110 - $c010) * $u;
+        $x01 = $c001 + ($c101 - $c001) * $u; $x11 = $c011 + ($c111 - $c011) * $u;
+        $y0i = $x00 + ($x10 - $x00) * $v;    $y1i = $x01 + ($x11 - $x01) * $v;
+        return $y0i + ($y1i - $y0i) * $w;
+    }
+
+    /** True where a cave hollows out underground rock (leaves a solid surface crust). */
+    private function caveAt(int $x, int $y, int $z): bool
+    {
+        if ($y < 2) { return false; } // keep a floor above bedrock
+        // two smoothed samples -> stringy tunnels + occasional pockets
+        $n = $this->vnoise3($x * 0.06, $y * 0.09, $z * 0.06);
+        return $n > 0.72;
     }
 
     /** Ore distribution inside stone (deterministic from position). */
@@ -1483,7 +1553,12 @@ final class MinecraftController extends Controller
             if ($t === self::DOOR && ($this->doorOpen[$k] ?? false)) { return 0; } // open door = passable
             return $t;
         }
-        if ($y <= $this->heightAt($x, $z)) { return $this->groundType($x, $y, $z); }
+        $h = $this->heightAt($x, $z);
+        if ($y <= $h) {
+            // carve caves below the surface crust (top block stays solid so no surface holes)
+            if ($y >= 2 && $y <= $h - 2 && $this->caveAt($x, $y, $z)) { return 0; }
+            return $this->groundType($x, $y, $z);
+        }
         return 0;
     }
 
@@ -1895,7 +1970,9 @@ final class MinecraftController extends Controller
 
     private function destroyAt(Engine $e, int $x, int $y, int $z): void
     {
-        if ($this->solidType($x, $y, $z) <= 0) { return; }
+        $type = $this->solidType($x, $y, $z);
+        if ($type <= 0) { return; }
+        $this->spawnBreakParticles($x, $y, $z, $type);
         $this->setEdit($x, $y, $z, 0); // record removal in the data model
         $this->play($this->sndBreak);
         $this->rebuildAround($x, $z);
@@ -2293,6 +2370,7 @@ final class MinecraftController extends Controller
             $this->updateSkyObjects();
             $this->updateWeather();
             $this->updatePuddles();
+            $this->updateParticles();
 
             $cx = (int) ($e->xGraphicsWidth() / 2);
             $cy = (int) ($e->xGraphicsHeight() / 2);
