@@ -120,7 +120,7 @@ trait Sky
         }
 
         $t = getenv('CRAFT_TIME');
-        $frac = ($t !== false) ? (float) $t : fmod($e->xMillisecs() / 120000.0, 1.0);
+        $frac = ($t !== false) ? (float) $t : fmod($e->xMillisecs() / 120000.0 + $this->timeShift, 1.0);
         $ang = $frac * 360.0;
         $e->xRotateEntity($this->sun, $ang, 30, 0);
         $e->xRotateEntity($this->moon, $ang + 180.0, 30, 0); // opposite the sun

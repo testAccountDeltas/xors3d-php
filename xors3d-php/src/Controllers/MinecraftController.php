@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Xors3D\Controllers;
 
 use Xors3D\Controllers\Craft\Assets;
+use Xors3D\Controllers\Craft\Bed;
 use Xors3D\Controllers\Craft\Chunks;
 use Xors3D\Controllers\Craft\Effects;
 use Xors3D\Controllers\Craft\Inventory;
@@ -56,6 +57,7 @@ final class MinecraftController extends Controller
     use World;      // edits, solidType, (re)gen, break/place, doors, save/load (src/Controllers/Craft/)
     use Survival;   // health, fall damage, drowning, hearts HUD (src/Controllers/Craft/)
     use Storage;    // chest inventories + transfer menu (src/Controllers/Craft/)
+    use Bed;        // sleep (B) at night near a bed to skip to morning (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -193,6 +195,7 @@ final class MinecraftController extends Controller
     private float $airMaxY = 0.0;  // peak height reached while airborne (for fall damage)
     private bool $wasGround = true;
     private bool $fallGrace = true; // skip fall damage on the initial spawn drop
+    private float $timeShift = 0.0; // day-cycle offset (sleeping in a bed skips to morning)
     private int $lastStep = 0;
     private int $mobTimer = 0;
     private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
@@ -503,6 +506,7 @@ final class MinecraftController extends Controller
 
             // C opens the crafting / block menu (assigns a block to the active slot)
             if ($e->xKeyHit(Constants::KEY_C)) { $this->craftMenu(); }
+            if ($e->xKeyHit(Constants::KEY_B)) { $this->trySleep(); }
 
             if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
