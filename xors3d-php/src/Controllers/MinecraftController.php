@@ -259,6 +259,7 @@ final class MinecraftController extends Controller
     /** @var array<int,int> block type => brush (textured) for chunk meshes */ private array $brush = [];
     /** @var array<string,int> chunk key => merged mesh handle */ private array $chunkMesh = [];
     /** @var array<int,string> mesh handle => chunk key (for picking) */ private array $meshCk = [];
+    /** @var array<string,bool> chunk key => currently shown (frustum cull state) */ private array $chunkVis = [];
     /** @var array<string,int[]> unloaded-but-kept chunk entity lists (hidden), LRU-ordered for reuse on backtrack */
     private array $chunkCache = [];
     private const CHUNK_CACHE_MAX = 192; // keep this many recently-seen chunks meshed but hidden
@@ -571,6 +572,7 @@ final class MinecraftController extends Controller
 
             if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
+            $this->cullChunks(); // hide chunks outside the view cone (fewer draws + shader binds)
             $e->xRenderWorld();
             $this->renderGodRays();
             $this->renderBloom();

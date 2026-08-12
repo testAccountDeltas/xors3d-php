@@ -340,6 +340,38 @@ trait Chunks
         $this->chunk[$ck] = array_merge([$mesh], $list);
     }
 
+    /**
+     * Horizontal frustum culling: hide loaded chunk meshes that are outside the view cone
+     * (mostly behind the player) so xRenderWorld neither draws them nor - crucially - binds
+     * the per-entity block shader for them. Only toggles on visibility CHANGE to avoid
+     * per-frame show/hide FFI churn. A generous cone (~78deg off-forward) avoids edge pop-in.
+     */
+    private function cullChunks(): void
+    {
+        if ($this->loaded === []) { return; }
+        $e = $this->e; $B = self::BLOCK;
+        $px = $e->xEntityX($this->camH, 1); $pz = $e->xEntityZ($this->camH, 1);
+        $e->xTFormVector(0.0, 0.0, 1.0, $this->camH, 0);
+        $fx = $e->xTFormedX(); $fz = $e->xTFormedZ();
+        $fl = sqrt($fx * $fx + $fz * $fz) ?: 1.0; $fx /= $fl; $fz /= $fl;
+        $near = 1.5 * self::CH * $B;   // never cull the chunks right around the player
+        $cosLim = 0.20;                // ~78deg half-cone
+        $half = self::CH * $B * 0.5;
+        foreach (array_keys($this->loaded) as $ck) {
+            $m = $this->chunkMesh[$ck] ?? 0;
+            if ($m === 0) { continue; }
+            [$cx, $cz] = explode(',', $ck);
+            $wx = (int) $cx * self::CH * $B + $half - $px;
+            $wz = (int) $cz * self::CH * $B + $half - $pz;
+            $d = sqrt($wx * $wx + $wz * $wz);
+            $vis = $d < $near || ($wx * $fx + $wz * $fz) / max(1e-3, $d) > $cosLim;
+            if (($this->chunkVis[$ck] ?? true) !== $vis) {   // only toggle on change
+                $this->chunkVis[$ck] = $vis;
+                if ($vis) { $e->xShowEntity($m); } else { $e->xHideEntity($m); }
+            }
+        }
+    }
+
     private function loadChunk(int $cx, int $cz): void
     {
         $ck = "$cx,$cz";
@@ -347,6 +379,7 @@ trait Chunks
         // Reuse a previously-built mesh kept hidden in the cache (backtracking): just show it
         // again - no re-mesh, no gen. This is the "chunk reuse" that avoids rebuilding chunks
         // you already visited when you fly back into them.
+        unset($this->chunkVis[$ck]); // re-evaluate frustum visibility for a (re)loaded chunk
         if (isset($this->chunkCache[$ck])) {
             $e = $this->e;
             foreach ($this->chunkCache[$ck] as $h) { $e->xShowEntity($h); }
@@ -402,7 +435,7 @@ trait Chunks
         foreach ($this->chunk[$ck] ?? [] as $h) { $e->xHideEntity($h); }
         unset($this->chunkCache[$ck]);                     // refresh LRU position
         $this->chunkCache[$ck] = $this->chunk[$ck] ?? [];
-        unset($this->loaded[$ck]);
+        unset($this->loaded[$ck], $this->chunkVis[$ck]);
 
         while (count($this->chunkCache) > self::CHUNK_CACHE_MAX) {
             $old = array_key_first($this->chunkCache);
