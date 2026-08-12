@@ -56,12 +56,16 @@ trait Effects
         unset($p);
     }
 
-    /** Reassign the point-light pool to the nearest torches/glowstone around the player. */
+    /**
+     * Reassign the point-light pool to the nearest torches/glowstone around the player.
+     * Intensity fades smoothly with distance (and the light range grows) instead of
+     * cutting off, so lights don't blink out when you walk away.
+     */
     private function updatePointLights(): void
     {
         if ($this->pointLights === []) { return; }
         $e = $this->e; $B = self::BLOCK;
-        $reach = 26.0 * $B; $reach2 = $reach * $reach;
+        $reach = 60.0 * $B; $reach2 = $reach * $reach;   // wider reach than before
         $px = $this->px; $py = $this->py; $pz = $this->pz;
         $near = [];
         foreach ($this->lightCells as [$x, $y, $z]) {
@@ -73,7 +77,11 @@ trait Effects
         sort($near); // nearest first (by squared distance)
         foreach ($this->pointLights as $i => $l) {
             if (isset($near[$i])) {
-                [, $wx, $wy, $wz] = $near[$i];
+                [$d2, $wx, $wy, $wz] = $near[$i];
+                $f = max(0.0, 1.0 - sqrt($d2) / $reach);   // 1 near -> 0 at the edge
+                $f = $f * $f;                              // ease-out for a soft falloff
+                $e->xLightColor($l, (int) (255 * $f), (int) (205 * $f), (int) (130 * $f));
+                $e->xLightRange($l, (14.0 + 8.0 * (1.0 - $f)) * $B); // reaches a bit farther as it dims
                 $e->xPositionEntity($l, $wx, $wy + $B * 0.3, $wz);
                 $e->xShowEntity($l);
             } else {
