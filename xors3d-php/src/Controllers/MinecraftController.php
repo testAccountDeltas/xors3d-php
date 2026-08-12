@@ -76,7 +76,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 32,
-        'bloom' => 0, 'godrays' => 1,
+        'bloom' => 0, 'godrays' => 1, 'weather' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -86,6 +86,7 @@ final class MinecraftController extends Controller
         ['key' => 'fov',         'label' => 'Field of view',     'type' => 'float', 'min' => 0.6, 'max' => 1.6, 'step' => 0.1],
         ['key' => 'fog',         'label' => 'Fog',               'type' => 'bool'],
         ['key' => 'daynight',    'label' => 'Day/night cycle',   'type' => 'bool'],
+        ['key' => 'weather',     'label' => 'Weather (rain/snow)', 'type' => 'bool'],
         ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
         ['key' => 'godrays',     'label' => 'Sun rays (shader)', 'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
@@ -156,6 +157,17 @@ final class MinecraftController extends Controller
     private array $clouds = [];
     /** @var int[] all cloud puff sprite handles (for day/night tinting) */
     private array $cloudPuffs = [];
+
+    // weather: a pool of falling billboard sprites (rain streaks / snow flakes)
+    private int $rainTex = 0;
+    private int $snowTex = 0;
+    /** @var array<int,array<string,float|int>> particle pool: [sp, x, y, z, vy, sway] */
+    private array $drops = [];
+    private int $weather = 0;      // 0 = clear, 1 = rain, 2 = snow
+    private float $weatherTimer = 0.0; // frames until the next weather roll
+    private float $wetness = 0.0;   // 0..1 eased overcast amount for sky darkening
+    private bool $snowOn = false;   // snow is lying on the ground (top faces rendered white)
+    private float $snowBuild = 0.0; // frames of snow before it covers the ground
     /** @var array<int,int> hotbar type id => 2D icon image handle */
     private array $icon = [];
     /** @var array<string,int> mob part textures */
@@ -360,6 +372,134 @@ final class MinecraftController extends Controller
                 'sp'    => (mt_rand(2, 5) / 100.0) * self::BLOCK,
             ];
         }
+
+        $this->createWeather($e, $sky, $fxSky);
+    }
+
+    /** Build the reusable precipitation particle pool (rain streaks / snow flakes). */
+    private function createWeather(Engine $e, string $sky, int $fxSky): void
+    {
+        $this->rainTex = $e->xLoadTexture($sky . 'rain.png', 1 + 2 + 8);
+        $this->snowTex = $e->xLoadTexture($sky . 'snow.png', 1 + 2 + 8);
+
+        for ($i = 0; $i < 320; $i++) {
+            $sp = $e->xCreateSprite();
+            $e->xEntityTexture($sp, $this->rainTex);
+            $e->xEntityFX($sp, $fxSky); // fullbright + fog-immune so it reads at any distance
+            $e->xHideEntity($sp);
+            $this->drops[] = ['sp' => $sp, 'x' => 0.0, 'y' => 0.0, 'z' => 0.0, 'vy' => 0.0, 'sway' => 0.0];
+        }
+        $this->weatherTimer = 600.0; // first roll after ~10 s
+    }
+
+    /**
+     * Weather state machine + particle update. Rolls clear/rain/snow every ~30-70 s;
+     * snow only where it is cold (snow biome / high ground), rain elsewhere. Particles
+     * fall in a box that follows the player and respawn at the top when they land.
+     */
+    private function updateWeather(): void
+    {
+        $e = $this->e; $B = self::BLOCK; $dt = $this->dt;
+
+        if (!(int) ($this->settings['weather'] ?? 1)) {
+            if ($this->weather !== 0) { $this->setWeather(0); }
+            return;
+        }
+
+        // debug/testing: CRAFT_WEATHER=0|1|2 forces clear/rain/snow (skips the roll)
+        $force = getenv('CRAFT_WEATHER');
+        if ($force !== false) {
+            $fw = (int) $force;
+            if ($this->weather !== $fw) { $this->setWeather($fw); }
+            $this->weatherTimer = 1e9;
+            if ($fw === 2) { $this->snowBuild = 420.0; } // settle snow immediately for testing
+        }
+
+        // roll new weather periodically
+        $this->weatherTimer -= $dt;
+        if ($this->weatherTimer <= 0.0) {
+            $this->weatherTimer = mt_rand(1800, 4200); // ~30-70 s at 60 FPS
+            $roll = mt_rand(0, 99);
+            if ($roll < 55) {
+                $this->setWeather(0);                    // mostly clear
+            } else {
+                $cold = $this->coldAt($this->px, $this->pz);
+                $this->setWeather($cold ? 2 : 1);
+            }
+        }
+
+        // ease overcast darkening in/out
+        $target = $this->weather === 0 ? 0.0 : ($this->weather === 1 ? 0.55 : 0.35);
+        $this->wetness += ($target - $this->wetness) * min(1.0, 0.03 * $dt);
+
+        // snow settles on the ground after a while of snowfall, then melts once it stops
+        if ($this->weather === 2) {
+            $this->snowBuild = min(420.0, $this->snowBuild + $dt);
+            if (!$this->snowOn && $this->snowBuild >= 300.0) { $this->snowOn = true; $this->remeshLoaded(); }
+        } else {
+            $this->snowBuild = max(0.0, $this->snowBuild - $dt * 0.5); // melt slower than it falls
+            if ($this->snowOn && $this->snowBuild <= 0.0) { $this->snowOn = false; $this->remeshLoaded(); }
+        }
+
+        if ($this->weather === 0) { return; }
+
+        $snow  = $this->weather === 2;
+        $range = 26.0 * $B;                 // half-box around the player
+        $top   = $this->py + 22.0 * $B;
+        $floor = $this->py - 6.0 * $B;
+        $fall  = ($snow ? 0.35 : 1.5) * $B; // world units per 60-FPS frame
+
+        foreach ($this->drops as &$p) {
+            $p['y'] -= $fall * $dt * (0.85 + $p['sway'] * 0.3);
+            if ($snow) { $p['x'] += sin(($p['y'] + $p['sway'] * 50) * 0.05) * 0.12 * $B * $dt; }
+            if ($p['y'] < $floor) { // respawn at the top over a fresh column
+                $p['x'] = $this->px + (mt_rand(-1000, 1000) / 1000.0) * $range;
+                $p['z'] = $this->pz + (mt_rand(-1000, 1000) / 1000.0) * $range;
+                $p['y'] = $top - (mt_rand(0, 1000) / 1000.0) * 4.0 * $B;
+                $p['sway'] = mt_rand(0, 100) / 100.0;
+            }
+            $e->xPositionEntity($p['sp'], $p['x'], $p['y'], $p['z']);
+        }
+        unset($p);
+    }
+
+    /** True where precipitation should fall as snow (cold biome / snowy heights). */
+    private function coldAt(float $wx, float $wz): bool
+    {
+        $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
+        return $this->heightAt($bx, $bz) >= self::SNOW || $this->biomeVal($bx, $bz) >= 0.80;
+    }
+
+    /** Switch the active weather: swap the particle texture, size and (dis)appear. */
+    private function setWeather(int $w): void
+    {
+        $e = $this->e; $B = self::BLOCK;
+        $this->weather = $w;
+        if ($w === 0) {
+            foreach ($this->drops as $p) { $e->xHideEntity($p['sp']); }
+            return;
+        }
+        $snow = $w === 2;
+        $tex  = $snow ? $this->snowTex : $this->rainTex;
+        foreach ($this->drops as &$p) {
+            $e->xEntityTexture($p['sp'], $tex);
+            if ($snow) {
+                $e->xScaleSprite($p['sp'], 0.22 * $B, 0.22 * $B);
+                $e->xEntityAlpha($p['sp'], 0.85);
+                $e->xEntityColor($p['sp'], 255, 255, 255);
+            } else {
+                $e->xScaleSprite($p['sp'], 0.06 * $B, 1.1 * $B); // tall thin streak
+                $e->xEntityAlpha($p['sp'], 0.5);
+                $e->xEntityColor($p['sp'], 190, 210, 245);
+            }
+            // seed a starting position so the first frame isn't a clump at origin
+            $p['x'] = $this->px + (mt_rand(-1000, 1000) / 1000.0) * 26.0 * $B;
+            $p['z'] = $this->pz + (mt_rand(-1000, 1000) / 1000.0) * 26.0 * $B;
+            $p['y'] = $this->py + (mt_rand(-600, 2200) / 100.0) * $B;
+            $p['sway'] = mt_rand(0, 100) / 100.0;
+            $e->xShowEntity($p['sp']);
+        }
+        unset($p);
     }
 
     /** Position sun & moon discs relative to the camera, drift the clouds. */
@@ -432,13 +572,30 @@ final class MinecraftController extends Controller
         $e->xLightColor($this->moon, (int) (80 * $night), (int) (95 * $night), (int) (150 * $night));
 
         // sky: warm-blue day -> deep-blue night
-        $r = (int) (22 + $day * 118); $g = (int) (32 + $day * 158); $b = (int) (60 + $day * 175);
-        $e->xCameraClsColor($this->camH, $r, $g, $b);
-        $e->xCameraFogColor($this->camH, $r, $g, $b);
+        $r = (22 + $day * 118); $g = (32 + $day * 158); $b = (60 + $day * 175);
 
-        // keep night navigable (moonlit), bright at noon
-        $amb = (int) (45 + $day * 80);
-        $e->xAmbientLight($amb, $amb, (int) ($amb * 1.25)); // slightly blue ambient
+        // overcast: pull the sky toward flat grey and dim the sun while it rains/snows
+        $w = $this->wetness;
+        if ($w > 0.001) {
+            $gr = 70 + $day * 55; // grey level that tracks day/night
+            $r = $r + ($gr - $r) * $w; $g = $g + ($gr - $g) * $w; $b = $b + ($gr * 1.05 - $b) * $w;
+            $dim = 1.0 - 0.5 * $w;
+            $e->xLightColor($this->sun, (int) (255 * $day * $dim), (int) (250 * $day * $dim), (int) (235 * $day * $dim));
+        }
+        $e->xCameraClsColor($this->camH, (int) $r, (int) $g, (int) $b);
+        $e->xCameraFogColor($this->camH, (int) $r, (int) $g, (int) $b);
+
+        // keep night navigable (moonlit), bright at noon; a touch dimmer when overcast
+        $amb = (45 + $day * 80) * (1.0 - 0.25 * $w);
+        $ar = $amb; $ag = $amb; $ab = $amb * 1.25; // slightly blue ambient
+        // rain: cool sky-coloured sheen so wet surfaces glisten (fake reflection)
+        if ($this->weather === 1) {
+            $sheen = $w * (0.35 + $day * 0.4);
+            $ar += (150 - $ar) * $sheen * 0.5;
+            $ag += (175 - $ag) * $sheen * 0.6;
+            $ab += (210 - $ab) * $sheen * 0.8;
+        }
+        $e->xAmbientLight((int) $ar, (int) $ag, (int) min(255.0, $ab));
     }
 
     // =================================================================== sound
@@ -886,6 +1043,13 @@ final class MinecraftController extends Controller
         return $this->oreAt($x, $y, $z);                     // stone / ore
     }
 
+    /** Block types that snow settles on top of (natural ground + built stone/brick/wood). */
+    private function coverable(int $type): bool
+    {
+        // grass, dirt, stone, brick, wood, snow, sand, glowstone, ores
+        return in_array($type, [1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14], true);
+    }
+
     private function setEdit(int $x, int $y, int $z, int $type): void
     {
         $k = "$x,$y,$z";
@@ -949,6 +1113,7 @@ final class MinecraftController extends Controller
         $dims = [self::CH, $yMax + 1, self::CH];
         $off  = [$x0, 0, $z0];
         $surf = [];
+        $snowTop = $this->snowOn; // render upward ground faces as snow while it lies
 
         for ($d = 0; $d < 3; $d++) {
             $u = ($d + 1) % 3; $v = ($d + 2) % 3;
@@ -965,8 +1130,11 @@ final class MinecraftController extends Controller
                         $pb = $pa; $pb[$d] = $xd + 1;
                         $b = $this->solidType($off[0] + $pb[0], $off[1] + $pb[1], $off[2] + $pb[2]);
                         if (($a > 0) === ($b > 0)) { $mask[$n++] = 0; }
-                        elseif ($a > 0)           { $mask[$n++] = $a; }
-                        else                      { $mask[$n++] = -$b; }
+                        elseif ($a > 0) {
+                            // snow lies on upward-facing ground faces (Y+ top of block a)
+                            $mask[$n++] = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a;
+                        }
+                        else            { $mask[$n++] = -$b; }
                     }
                 }
                 // greedy-merge the mask into quads
@@ -1099,6 +1267,15 @@ final class MinecraftController extends Controller
         if (isset($this->loaded["$cx,$cz"])) { $this->buildChunkMesh($cx, $cz); }
     }
 
+    /** Rebuild every currently-loaded chunk mesh (e.g. when snow settles or melts). */
+    private function remeshLoaded(): void
+    {
+        foreach (array_keys($this->loaded) as $ck) {
+            [$cx, $cz] = array_map('intval', explode(',', $ck));
+            $this->buildChunkMesh($cx, $cz);
+        }
+    }
+
     private function unloadChunk(int $cx, int $cz): void
     {
         $ck = "$cx,$cz";
@@ -1138,9 +1315,10 @@ final class MinecraftController extends Controller
     private function applyRenderDist(): void
     {
         $d = (int) $this->settings['renderDist'] * self::BLOCK;
-        $this->e->xCameraRange($this->camH, 0.2, $d * 1.4);
-        // very light fog: clear almost to the far edge, only a thin haze at the end
-        $this->e->xCameraFogRange($this->camH, $d * 1.02, $d * 1.35);
+        $this->e->xCameraRange($this->camH, 0.2, $d * 1.6);
+        // minimal fog: fully clear across the whole loaded area, only a faint haze
+        // right at the far unload boundary so chunk pop-in isn't jarring
+        $this->e->xCameraFogRange($this->camH, $d * 1.2, $d * 1.55);
         $this->streamCX = PHP_INT_MAX; // force a streaming refresh
         $this->streamCZ = PHP_INT_MAX;
     }
@@ -1613,6 +1791,7 @@ final class MinecraftController extends Controller
             $e->xTurnEntity($this->hand, 0, 1.5 * $this->dt, 0);
             $this->updateSky();
             $this->updateSkyObjects();
+            $this->updateWeather();
 
             $cx = (int) ($e->xGraphicsWidth() / 2);
             $cy = (int) ($e->xGraphicsHeight() / 2);
