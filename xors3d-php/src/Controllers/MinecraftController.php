@@ -12,6 +12,7 @@ use Xors3D\Controllers\Craft\Mobs;
 use Xors3D\Controllers\Craft\Player;
 use Xors3D\Controllers\Craft\Sky;
 use Xors3D\Controllers\Craft\Structures;
+use Xors3D\Controllers\Craft\Survival;
 use Xors3D\Controllers\Craft\TerrainGen;
 use Xors3D\Controllers\Craft\Ui;
 use Xors3D\Controllers\Craft\Weather;
@@ -52,6 +53,7 @@ final class MinecraftController extends Controller
     use Ui;         // settings, menus, backdrop, HUD (src/Controllers/Craft/)
     use Assets;     // sounds, block templates + brushes, hand (src/Controllers/Craft/)
     use World;      // edits, solidType, (re)gen, break/place, doors, save/load (src/Controllers/Craft/)
+    use Survival;   // health, fall damage, drowning, hearts HUD (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -133,7 +135,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 48,
-        'bloom' => 0, 'godrays' => 1, 'weather' => 1,
+        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -144,6 +146,7 @@ final class MinecraftController extends Controller
         ['key' => 'fog',         'label' => 'Fog',               'type' => 'bool'],
         ['key' => 'daynight',    'label' => 'Day/night cycle',   'type' => 'bool'],
         ['key' => 'weather',     'label' => 'Weather (rain/snow)', 'type' => 'bool'],
+        ['key' => 'survival',    'label' => 'Survival (health)',  'type' => 'bool'],
         ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
         ['key' => 'godrays',     'label' => 'Sun rays (shader)', 'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
@@ -175,6 +178,13 @@ final class MinecraftController extends Controller
     private float $pz = 0.0;
     private float $vy = 0.0;
     private bool $onGround = false;
+
+    // survival state (health / fall damage / drowning)
+    private float $hp = 20.0;      // 0..20 (10 hearts)
+    private float $breath = 10.0;  // air left underwater
+    private float $airMaxY = 0.0;  // peak height reached while airborne (for fall damage)
+    private bool $wasGround = true;
+    private bool $fallGrace = true; // skip fall damage on the initial spawn drop
     private int $lastStep = 0;
     private int $mobTimer = 0;
     private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
@@ -375,6 +385,7 @@ final class MinecraftController extends Controller
         $this->mobTimer = 0;
         $seed = min(4, (int) $this->settings['mobs']);
         for ($i = 0; $i < $seed; $i++) { $this->spawnMobNear(); } // a few right away
+        $this->resetVitals();
     }
 
     // ================================================================ settings
@@ -446,6 +457,7 @@ final class MinecraftController extends Controller
             $this->updatePuddles();
             $this->updateParticles();
             $this->updatePointLights();
+            $this->updateSurvival();
 
             $cx = (int) ($e->xGraphicsWidth() / 2);
             $cy = (int) ($e->xGraphicsHeight() / 2);
@@ -486,6 +498,7 @@ final class MinecraftController extends Controller
             $this->renderGodRays();
             $this->renderBloom();
             $this->drawHud($e, $hasTarget);
+            $this->drawVitals($e);
 
             if ($max > 0 && $frame + 1 >= $max && ($shot = getenv('CRAFT_SHOT'))) {
                 $e->xSaveBuffer($e->xBackBuffer(), $shot);
