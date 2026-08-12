@@ -489,12 +489,19 @@ final class MinecraftController extends Controller
         foreach ($this->drops as &$p) {
             $p['y'] -= $fall * $dt * (0.85 + $p['sway'] * 0.3);
             if ($snow) { $p['x'] += sin(($p['y'] + $p['sway'] * 50) * 0.05) * 0.12 * $B * $dt; }
-            if ($p['y'] < $floor) { // respawn at the top over a fresh column
+            // respawn when it lands: below the box floor OR on hitting a solid block, so
+            // rain/snow settles on roofs & ground instead of passing through into buildings.
+            $hit = $p['y'] < $floor
+                || $this->solidType($this->cellOf($p['x']), $this->cellOf($p['y']), $this->cellOf($p['z'])) > 0;
+            if ($hit) { // respawn at the top over a fresh column
                 $p['x'] = $this->px + (mt_rand(-1000, 1000) / 1000.0) * $range;
                 $p['z'] = $this->pz + (mt_rand(-1000, 1000) / 1000.0) * $range;
                 $p['y'] = $top - (mt_rand(0, 1000) / 1000.0) * 4.0 * $B;
                 $p['sway'] = mt_rand(0, 100) / 100.0;
+                $e->xHideEntity($p['sp']);      // avoid a 1-frame streak inside the block
+                continue;
             }
+            $e->xShowEntity($p['sp']);
             $e->xPositionEntity($p['sp'], $p['x'], $p['y'], $p['z']);
         }
         unset($p);
@@ -510,7 +517,11 @@ final class MinecraftController extends Controller
         $raining = ($this->weather === 1) && (int) ($this->settings['weather'] ?? 1);
         $alpha = $raining ? min(0.5, $this->wetness * 0.9) : 0.0;
 
-        if (!$raining) {
+        // don't place/draw puddles when flying below the surface (under the map)
+        $surfaceY = $this->groundTop($this->cellOf($this->px), $this->cellOf($this->pz)) * $B + $B / 2;
+        $underMap = $this->py < $surfaceY - 4.0 * $B;
+
+        if (!$raining || $underMap) {
             foreach ($this->puddles as &$p) {
                 if ($p['placed']) { $e->xHideEntity($p['ent']); $p['placed'] = 0; }
             }
