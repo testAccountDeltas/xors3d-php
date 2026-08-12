@@ -74,11 +74,14 @@ final class MinecraftController extends Controller
         20 => ['Red Wool',      'redwool.png'],
         21 => ['White Wool',    'whitewool.png'],
         22 => ['Chiseled Stone', 'chiseledstone.png'],
+        23 => ['Door',          'door.png'],
     ];
 
-    /** Selectable blocks (hotbar / wheel), by type id. Keys 1-9 pick the first nine;
-     *  the mouse wheel cycles through the rest (building blocks). */
-    private const HOTBAR = [1, 2, 3, 5, 15, 16, 17, 10, 11, 18, 19, 20, 21, 22];
+    private const DOOR = 23;
+
+    /** Current hotbar (mutable: the crafting/block menu can reassign the active slot).
+     *  Keys 1-9 pick the first nine; the mouse wheel cycles through all. */
+    private array $hotbar = [1, 2, 3, 5, 15, 16, 17, 10, 23, 11, 18, 19, 20, 21, 22];
 
     /** @var array<string,int|float> */
     private array $settings = [
@@ -146,6 +149,7 @@ final class MinecraftController extends Controller
     /** @var array<string,bool> loaded chunk keys */ private array $loaded = [];
     /** @var array<string,int> "x,y,z" => type (0 = removed): tree + player edits over generated world */ private array $edits = [];
     /** @var array<string,array<string,int>> chunk key => its edits */ private array $editsByChunk = [];
+    /** @var array<string,bool> door cell "x,y,z" => open? */ private array $doorOpen = [];
     /** @var array<string,bool> chunks whose trees have been generated */ private array $treeGen = [];
     /** @var array<string,bool> chunk keys touched by the tree gen currently running */ private array $treeSpill = [];
     private bool $trackSpill = false;
@@ -290,7 +294,7 @@ final class MinecraftController extends Controller
 
     private function selectedType(): int
     {
-        return self::HOTBAR[$this->slot];
+        return $this->hotbar[$this->slot];
     }
 
     private function spawnPlayer(): void
@@ -716,8 +720,8 @@ final class MinecraftController extends Controller
             $e->xScaleEntity($cube, $this->scale, $this->scale, $this->scale);
             // glass loads as a MASKED texture: fully-transparent texels are discarded so
             // you see straight through the pane, the frame stays solid (crisp windows).
-            $texture = ($id === 10)
-                ? $e->xLoadTexture($base . $file, 1 + 4 + 8)   // color + masked + mipmap
+            $texture = ($id === 10 || $id === self::DOOR)
+                ? $e->xLoadTexture($base . $file, 1 + 4 + 8)   // color + masked + mipmap (glass/door)
                 : $e->xLoadTexture($base . $file);
             $this->tex[$id] = $texture;
             $e->xEntityTexture($cube, $texture);
@@ -1215,11 +1219,19 @@ final class MinecraftController extends Controller
     private function loadIcons(Engine $e): void
     {
         $base = dirname(__DIR__, 2) . '/assets/blocks/';
-        foreach (self::HOTBAR as $id) {
-            $img = $e->xLoadImage($base . self::TYPES[$id][1]);
+        foreach (self::TYPES as $id => [$name, $file]) {
+            if ($id === 7) { continue; } // leaves not placeable/selectable
+            $img = $e->xLoadImage($base . $file);
             $e->xResizeImage($img, 44, 44);
             $this->icon[$id] = $img;
         }
+    }
+
+    /** All block types that can be selected in the crafting/block menu. */
+    private function craftable(): array
+    {
+        $ids = array_keys(self::TYPES);
+        return array_values(array_filter($ids, fn($id) => $id !== 7)); // exclude leaves
     }
 
     private function exposedBottom(int $x, int $z): int
@@ -1340,7 +1352,11 @@ final class MinecraftController extends Controller
     private function solidType(int $x, int $y, int $z): int
     {
         $k = "$x,$y,$z";
-        if (array_key_exists($k, $this->edits)) { return $this->edits[$k]; }
+        if (array_key_exists($k, $this->edits)) {
+            $t = $this->edits[$k];
+            if ($t === self::DOOR && ($this->doorOpen[$k] ?? false)) { return 0; } // open door = passable
+            return $t;
+        }
         if ($y >= 0 && $y <= $this->heightAt($x, $z)) { return $this->groundType($x, $y, $z); }
         return 0;
     }
@@ -1758,8 +1774,27 @@ final class MinecraftController extends Controller
         if ($y < 0 || $y > self::Y_MAX) { return; }
         if ($this->solidType($x, $y, $z) > 0) { return; }
         $this->setEdit($x, $y, $z, $type);
+        if ($type === self::DOOR) {                         // doors are 2 blocks tall
+            if ($this->solidType($x, $y + 1, $z) <= 0) { $this->setEdit($x, $y + 1, $z, self::DOOR); }
+            $this->doorOpen["$x,$y,$z"] = false;
+            $this->doorOpen[($x) . ',' . ($y + 1) . ',' . ($z)] = false;
+        }
         $this->play($this->sndPlace);
         $this->rebuildAround($x, $z);
+    }
+
+    /** Toggle the door at (x,y,z) and its vertical partner (open/close), rebuild + sound. */
+    private function toggleDoor(int $x, int $y, int $z): bool
+    {
+        if (($this->edits["$x,$y,$z"] ?? -1) !== self::DOOR) { return false; }
+        $cells = ["$x,$y,$z"];
+        if (($this->edits[($x).','.($y + 1).','.($z)] ?? -1) === self::DOOR) { $cells[] = ($x).','.($y + 1).','.($z); }
+        if (($this->edits[($x).','.($y - 1).','.($z)] ?? -1) === self::DOOR) { $cells[] = ($x).','.($y - 1).','.($z); }
+        $open = !($this->doorOpen["$x,$y,$z"] ?? false);
+        foreach ($cells as $c) { $this->doorOpen[$c] = $open; }
+        $this->play($open ? $this->sndPlace : $this->sndBreak);
+        $this->rebuildAround($x, $z);
+        return true;
     }
 
     private function faceOffset(Engine $e): array
@@ -2112,12 +2147,12 @@ final class MinecraftController extends Controller
             $this->updateMobs();
 
             // block selection: number keys 1-9 (first nine) + mouse wheel (all)
-            for ($n = 1; $n <= min(9, count(self::HOTBAR)); $n++) {
+            for ($n = 1; $n <= min(9, count($this->hotbar)); $n++) {
                 if ($e->xKeyHit(Constants::KEY_1 + ($n - 1))) { $this->slot = $n - 1; $this->refreshHand($e); }
             }
             $wheel = $e->xMouseZSpeed();
             if ($wheel !== 0) {
-                $c = count(self::HOTBAR);
+                $c = count($this->hotbar);
                 $this->slot = (($this->slot - ($wheel > 0 ? 1 : -1)) % $c + $c) % $c;
                 $this->refreshHand($e);
             }
@@ -2148,8 +2183,17 @@ final class MinecraftController extends Controller
                     $by = $this->cellOf($py + $dy * $q);
                     $bz = $this->cellOf($pz + $dz * $q);
                     $this->placeAt($e, $bx, $by, $bz, $this->selectedType());
+                } elseif ($e->xKeyHit(Constants::KEY_E)) {
+                    // E opens/closes the targeted door
+                    $bx = $this->cellOf($px - $dx * $q);
+                    $by = $this->cellOf($py - $dy * $q);
+                    $bz = $this->cellOf($pz - $dz * $q);
+                    $this->toggleDoor($bx, $by, $bz);
                 }
             }
+
+            // C opens the crafting / block menu (assigns a block to the active slot)
+            if ($e->xKeyHit(Constants::KEY_C)) { $this->craftingMenu(); }
 
             if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
@@ -2182,16 +2226,16 @@ final class MinecraftController extends Controller
         $e->xColor(220, 220, 220);
         $e->xText(10, 30, 'Chunks: ' . count($this->chunkMesh) . '   Sheep: ' . count($this->mobs));
         $e->xText(10, 50, 'Mode: ' . ($this->fly ? 'Fly (F)' : 'Walk (F)'));
-        $e->xText(10, 70, $hasTarget ? 'LMB destroy / RMB place' : 'no target');
-        $e->xText(10, 90, 'Esc: menu');
+        $e->xText(10, 70, $hasTarget ? 'LMB destroy / RMB place / E door' : 'no target');
+        $e->xText(10, 90, 'C: craft menu    Esc: menu');
 
         // visual hotbar: block icons with a selection frame
-        $slots = count(self::HOTBAR);
+        $slots = count($this->hotbar);
         $cell = 52; $pad = 4; $iw = 44;
         $barW = $slots * $cell;
         $x0 = $cx - (int) ($barW / 2);
         $y0 = $e->xGraphicsHeight() - $cell - 8;
-        foreach (self::HOTBAR as $i => $id) {
+        foreach ($this->hotbar as $i => $id) {
             $sx = $x0 + $i * $cell;
             $e->xColor(20, 20, 20);
             $e->xRect($sx, $y0, $cell - 2, $cell - 2, 1);             // slot background
@@ -2206,5 +2250,69 @@ final class MinecraftController extends Controller
         // selected block name
         $e->xColor(255, 255, 255);
         $e->xText($cx, $y0 - 18, self::TYPES[$this->selectedType()][0], 1);
+    }
+
+    /**
+     * Full block/crafting menu: a grid of every placeable block. Arrows/mouse move the
+     * cursor, Enter/LMB assigns the block to the active hotbar slot. C/Esc closes.
+     */
+    private function craftingMenu(): void
+    {
+        $e = $this->e;
+        $ids = $this->craftable();
+        $cols = 8; $cell = 64; $pad = 8;
+        $sel = array_search($this->selectedType(), $ids, true);
+        if ($sel === false) { $sel = 0; }
+
+        while (true) {
+            if ($this->closeRequested()) { $this->quit = true; return; }
+            if ($e->xKeyHit(Constants::KEY_ESCAPE) || $e->xKeyHit(Constants::KEY_C)) { return; }
+            $n = count($ids);
+            if ($e->xKeyHit(Constants::KEY_LEFT))  { $sel = ($sel + $n - 1) % $n; }
+            if ($e->xKeyHit(Constants::KEY_RIGHT)) { $sel = ($sel + 1) % $n; }
+            if ($e->xKeyHit(Constants::KEY_UP))    { $sel = ($sel + $n - $cols) % $n; }
+            if ($e->xKeyHit(Constants::KEY_DOWN))  { $sel = ($sel + $cols) % $n; }
+
+            $w = $e->xGraphicsWidth(); $gh = $e->xGraphicsHeight();
+            $rows = (int) ceil($n / $cols);
+            $gw = $cols * $cell; $ghgt = $rows * $cell;
+            $gx = (int) (($w - $gw) / 2); $gy = (int) (($gh - $ghgt) / 2) + 10;
+
+            // mouse hover + click to pick
+            $mx = $e->xMouseX(); $my = $e->xMouseY();
+            if ($mx >= $gx && $mx < $gx + $gw && $my >= $gy && $my < $gy + $ghgt) {
+                $hi = (int) (($my - $gy) / $cell) * $cols + (int) (($mx - $gx) / $cell);
+                if ($hi >= 0 && $hi < $n) { $sel = $hi; if ($e->xMouseHit(1)) { $this->applyCraftPick($ids[$sel]); return; } }
+            }
+            if ($e->xKeyHit(Constants::KEY_RETURN)) { $this->applyCraftPick($ids[$sel]); return; }
+
+            // dark modal background + panel
+            $e->xRenderWorld();
+            $e->xColor(12, 14, 22); $e->xRect(0, 0, $w, $gh, 1);
+            $e->xColor(230, 230, 240);
+            $e->xText((int) ($w / 2), $gy - 46, 'C R A F T   -   pick a block', 1);
+            $e->xColor(170, 175, 190);
+            $e->xText((int) ($w / 2), $gy - 26, 'Arrows/Mouse: move    Enter/Click: choose    C/Esc: close', 1);
+
+            foreach ($ids as $i => $id) {
+                $r = intdiv($i, $cols); $c = $i % $cols;
+                $sx = $gx + $c * $cell; $sy = $gy + $r * $cell;
+                $e->xColor(30, 32, 40); $e->xRect($sx, $sy, $cell - 3, $cell - 3, 1);
+                $e->xDrawImage($this->icon[$id], $sx + $pad, $sy + $pad);
+                if ($i === $sel) { $e->xColor(255, 235, 120); $e->xRect($sx - 1, $sy - 1, $cell, $cell, 0); }
+            }
+            // name of the highlighted block
+            $e->xColor(255, 255, 255);
+            $e->xText((int) ($w / 2), $gy + $ghgt + 12, self::TYPES[$ids[$sel]][0], 1);
+
+            $e->xFlip();
+        }
+    }
+
+    /** Put the chosen block into the active hotbar slot and refresh the held item. */
+    private function applyCraftPick(int $id): void
+    {
+        $this->hotbar[$this->slot] = $id;
+        $this->refreshHand($this->e);
     }
 }

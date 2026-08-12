@@ -51,6 +51,7 @@ function mapBlock(string $name): int {
     if (in_array($n, ['glowstone', 'sea_lantern', 'shroomlight', 'ochre_froglight', 'verdant_froglight', 'pearlescent_froglight', 'jack_o_lantern', 'redstone_lamp'], true)
         || str_contains($n, 'lantern') || str_contains($n, 'torch') || str_contains($n, 'campfire') || str_contains($n, 'candle') || str_contains($n, 'lamp')) return 11;
     if (str_contains($n, 'bookshelf')) return 19;
+    if (str_contains($n, '_door') && !str_contains($n, 'trapdoor')) return 23; // openable door
     if (str_contains($n, 'chiseled_stone_brick')) return 22;
     if (str_contains($n, 'stone_brick') || str_contains($n, 'polished_blackstone_brick') || str_contains($n, 'deepslate_brick') || str_contains($n, 'deepslate_tile') || str_contains($n, 'nether_brick') || str_contains($n, 'quartz_brick') || str_contains($n, 'end_stone_brick') || str_contains($n, 'tuff_brick')) return 16;
     if ($n === 'bricks' || str_contains($n, 'brick_')) return 4;
