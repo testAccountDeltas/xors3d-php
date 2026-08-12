@@ -202,29 +202,51 @@ trait Chunks
         }
     }
 
+    /**
+     * Generate a chunk's trees + procedural buildings into the edit overlay ONCE (no
+     * meshing). Kept separate from buildChunkMesh so the streamer can do generation on one
+     * frame and meshing on the next - never both for the same chunk in a single frame,
+     * which is what caused the residual hitch when flying into fresh, structure-bearing land.
+     */
+    private function ensureGen(int $cx, int $cz): void
+    {
+        $ck = "$cx,$cz";
+        if (isset($this->treeGen[$ck])) { return; }
+        $e = $this->e;
+        $this->treeGen[$ck] = true;
+        // trees + buildings write edits that can spill into neighbour chunks; track them so
+        // already-built neighbours get rebuilt (no missing canopies / half-built structures).
+        $this->trackSpill = true; $this->treeSpill = [];
+        $this->genStructures($cx, $cz);
+        $this->genTrees($cx, $cz);
+        $this->trackSpill = false;
+
+        foreach (array_keys($this->treeSpill) as $nk) {
+            if ($nk === $ck) { continue; }
+            if (isset($this->chunkCache[$nk])) {
+                // a cached (hidden) neighbour received spilled blocks -> its mesh is stale;
+                // drop it so it rebuilds fresh the next time it loads
+                foreach ($this->chunkCache[$nk] as $h) { unset($this->meshCk[$h], $this->water[$h]); $e->xFreeEntity($h); }
+                unset($this->chunkCache[$nk], $this->chunk[$nk], $this->chunkMesh[$nk]);
+                continue;
+            }
+            // queue (don't synchronously rebuild) already-built neighbours -> rebuildQ drains
+            // a few per frame, so a big blueprint's border faces fill in without a freeze
+            if (isset($this->loaded[$nk]) && isset($this->chunkMesh[$nk])) { $this->rebuildQ[$nk] = true; }
+        }
+    }
+
     private function buildChunkMesh(int $cx, int $cz): void
     {
         $e = $this->e;
         $ck = "$cx,$cz";
+        $this->ensureGen($cx, $cz); // no-op if already generated (streamer usually gens earlier)
 
         foreach ($this->chunk[$ck] ?? [] as $h) {
             unset($this->meshCk[$h], $this->water[$h]);
             $e->xFreeEntity($h);
         }
         $this->chunk[$ck] = [];
-
-        $spill = [];
-        if (!isset($this->treeGen[$ck])) {
-            $this->treeGen[$ck] = true;
-            // trees + procedural buildings write edits that can spill into neighbour
-            // chunks; track them so already-loaded neighbours get rebuilt (no missing
-            // canopies / half-built structures on the border-facing side).
-            $this->trackSpill = true; $this->treeSpill = [];
-            $this->genStructures($cx, $cz);
-            $this->genTrees($cx, $cz);
-            $this->trackSpill = false;
-            $spill = $this->treeSpill;
-        }
 
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
         $yMax = 0;
@@ -256,23 +278,6 @@ trait Chunks
         $this->chunkMesh[$ck] = $mesh;
         $this->meshCk[$mesh] = $ck;
         $this->chunk[$ck] = array_merge([$mesh], $list);
-
-        // Queue (don't synchronously rebuild) already-loaded neighbours that received
-        // spilled tree/structure blocks. A big blueprint spills into many chunks; rebuilding
-        // them all in this one frame caused a multi-hundred-ms freeze. rebuildQ drains a few
-        // per frame instead, so the border faces fill in over the next frames (no hitch).
-        foreach (array_keys($spill) as $nk) {
-            if ($nk === $ck) { continue; }
-            if (isset($this->chunkCache[$nk])) {
-                // a cached (hidden) neighbour received spilled blocks -> its mesh is now stale;
-                // drop it so it rebuilds fresh the next time it loads
-                foreach ($this->chunkCache[$nk] as $h) { unset($this->meshCk[$h], $this->water[$h]); $e->xFreeEntity($h); }
-                unset($this->chunkCache[$nk], $this->chunk[$nk], $this->chunkMesh[$nk]);
-                continue;
-            }
-            if (!isset($this->loaded[$nk]) || !isset($this->chunkMesh[$nk])) { continue; }
-            $this->rebuildQ[$nk] = true; // treeGen already set -> no re-gen when it drains
-        }
     }
 
     private function loadChunk(int $cx, int $cz): void
@@ -409,13 +414,21 @@ trait Chunks
             $built = 0;
             foreach ($keys as $ck) {
                 if ($load-- <= 0) { break; }
-                if ($built > 0 && microtime(true) >= $deadline) { break; } // spent our slice; always build >=1
-                unset($this->loadQ[$ck]);
-                if (!isset($this->loaded[$ck])) {
-                    [$cx, $cz] = explode(',', $ck);
-                    $this->loadChunk((int) $cx, (int) $cz);
+                if ($built > 0 && microtime(true) >= $deadline) { break; } // spent our slice; always do >=1
+                if (isset($this->loaded[$ck])) { unset($this->loadQ[$ck]); continue; }
+                [$cx, $cz] = explode(',', $ck); $cx = (int) $cx; $cz = (int) $cz;
+                // Generation and meshing are split across frames: if this chunk (or nearby
+                // land it depends on) isn't generated yet, generate it now and leave it queued
+                // - it meshes on a later frame. This keeps a heavy blueprint's generation and
+                // its (tall) mesh out of the same frame.
+                if (!isset($this->chunkCache[$ck]) && !isset($this->treeGen[$ck])) {
+                    $this->ensureGen($cx, $cz);
                     $built++;
+                    continue; // stays in loadQ -> meshed next frame
                 }
+                unset($this->loadQ[$ck]);
+                $this->loadChunk($cx, $cz);
+                $built++;
             }
         }
         if ($this->rebuildQ !== [] && $rebuild > 0) {
