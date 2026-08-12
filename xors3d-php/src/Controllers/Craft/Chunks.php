@@ -262,7 +262,15 @@ trait Chunks
         // them all in this one frame caused a multi-hundred-ms freeze. rebuildQ drains a few
         // per frame instead, so the border faces fill in over the next frames (no hitch).
         foreach (array_keys($spill) as $nk) {
-            if ($nk === $ck || !isset($this->loaded[$nk]) || !isset($this->chunkMesh[$nk])) { continue; }
+            if ($nk === $ck) { continue; }
+            if (isset($this->chunkCache[$nk])) {
+                // a cached (hidden) neighbour received spilled blocks -> its mesh is now stale;
+                // drop it so it rebuilds fresh the next time it loads
+                foreach ($this->chunkCache[$nk] as $h) { unset($this->meshCk[$h], $this->water[$h]); $e->xFreeEntity($h); }
+                unset($this->chunkCache[$nk], $this->chunk[$nk], $this->chunkMesh[$nk]);
+                continue;
+            }
+            if (!isset($this->loaded[$nk]) || !isset($this->chunkMesh[$nk])) { continue; }
             $this->rebuildQ[$nk] = true; // treeGen already set -> no re-gen when it drains
         }
     }
@@ -271,18 +279,48 @@ trait Chunks
     {
         $ck = "$cx,$cz";
         if (isset($this->loaded[$ck])) { return; }
+        // Reuse a previously-built mesh kept hidden in the cache (backtracking): just show it
+        // again - no re-mesh, no gen. This is the "chunk reuse" that avoids rebuilding chunks
+        // you already visited when you fly back into them.
+        if (isset($this->chunkCache[$ck])) {
+            $e = $this->e;
+            foreach ($this->chunkCache[$ck] as $h) { $e->xShowEntity($h); }
+            unset($this->chunkCache[$ck]);
+            $this->loaded[$ck] = true;
+            return;
+        }
         $this->loaded[$ck] = true;
         $this->buildChunkMesh($cx, $cz);
     }
 
     private function rebuildChunk(int $cx, int $cz): void
     {
-        if (isset($this->loaded["$cx,$cz"])) { $this->buildChunkMesh($cx, $cz); }
+        $ck = "$cx,$cz";
+        if (isset($this->loaded[$ck])) { $this->buildChunkMesh($cx, $cz); return; }
+        // not loaded but cached (hidden): its mesh is now stale -> drop so it rebuilds on return
+        if (isset($this->chunkCache[$ck])) {
+            $e = $this->e;
+            foreach ($this->chunkCache[$ck] as $h) { unset($this->meshCk[$h], $this->water[$h]); $e->xFreeEntity($h); }
+            unset($this->chunkCache[$ck], $this->chunk[$ck], $this->chunkMesh[$ck]);
+        }
+    }
+
+    /** Free every cached (hidden) chunk mesh. Called when the whole world's look changes
+     *  (snow settle/melt) or on world reset, so no stale chunk is ever shown again. */
+    private function clearChunkCache(): void
+    {
+        $e = $this->e;
+        foreach ($this->chunkCache as $ck => $list) {
+            foreach ($list as $h) { unset($this->meshCk[$h], $this->water[$h]); $e->xFreeEntity($h); }
+            unset($this->chunk[$ck], $this->chunkMesh[$ck]);
+        }
+        $this->chunkCache = [];
     }
 
     /** Queue every loaded chunk for a rebuild (snow settle/melt), spread over frames. */
     private function remeshLoaded(): void
     {
+        $this->clearChunkCache(); // cached chunks hold the old snow state; drop them
         foreach (array_keys($this->loaded) as $ck) { $this->rebuildQ[$ck] = true; }
     }
 
@@ -291,11 +329,22 @@ trait Chunks
         $ck = "$cx,$cz";
         if (!isset($this->loaded[$ck])) { return; }
         $e = $this->e;
-        foreach ($this->chunk[$ck] ?? [] as $h) {
-            unset($this->meshCk[$h], $this->water[$h]);
-            $e->xFreeEntity($h);
+        // Don't destroy the mesh - hide it and keep it in an LRU cache so returning here is
+        // free (no rebuild). Entities/handles (mesh + water) stay valid; they're just not
+        // drawn. Only when the cache overflows do the oldest chunks get truly freed.
+        foreach ($this->chunk[$ck] ?? [] as $h) { $e->xHideEntity($h); }
+        unset($this->chunkCache[$ck]);                     // refresh LRU position
+        $this->chunkCache[$ck] = $this->chunk[$ck] ?? [];
+        unset($this->loaded[$ck]);
+
+        while (count($this->chunkCache) > self::CHUNK_CACHE_MAX) {
+            $old = array_key_first($this->chunkCache);
+            foreach ($this->chunkCache[$old] as $h) {
+                unset($this->meshCk[$h], $this->water[$h]);
+                $e->xFreeEntity($h);
+            }
+            unset($this->chunkCache[$old], $this->chunk[$old], $this->chunkMesh[$old]);
         }
-        unset($this->chunk[$ck], $this->chunkMesh[$ck], $this->loaded[$ck]);
     }
 
     /**

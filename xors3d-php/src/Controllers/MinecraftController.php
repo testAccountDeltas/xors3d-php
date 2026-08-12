@@ -254,6 +254,9 @@ final class MinecraftController extends Controller
     /** @var array<int,int> block type => brush (textured) for chunk meshes */ private array $brush = [];
     /** @var array<string,int> chunk key => merged mesh handle */ private array $chunkMesh = [];
     /** @var array<int,string> mesh handle => chunk key (for picking) */ private array $meshCk = [];
+    /** @var array<string,int[]> unloaded-but-kept chunk entity lists (hidden), LRU-ordered for reuse on backtrack */
+    private array $chunkCache = [];
+    private const CHUNK_CACHE_MAX = 192; // keep this many recently-seen chunks meshed but hidden
     private int $streamCX = PHP_INT_MAX;
     private int $streamCZ = PHP_INT_MAX;
     /** @var array<string,bool> chunks wanted but not yet built (budgeted load queue) */

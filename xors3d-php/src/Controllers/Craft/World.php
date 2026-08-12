@@ -24,6 +24,7 @@ trait World
             foreach ($list as $h) { $e->xFreeEntity($h); }
         }
         $this->chunk = $this->chunkMesh = $this->meshCk = $this->water = $this->loaded = [];
+        $this->chunkCache = []; // handles already freed by the loop above
         $this->streamCX = PHP_INT_MAX;
         $this->streamCZ = PHP_INT_MAX;
     }
