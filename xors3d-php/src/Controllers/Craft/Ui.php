@@ -210,11 +210,20 @@ trait Ui
     {
         $e = $this->e;
         $this->processStreaming(6, 2); // keep the backdrop filling in without a freeze
-        $mid = $this->originX;
-        $t = $e->xMillisecs() / 4000.0;
-        $r = (int) $this->settings["renderDist"] * self::BLOCK * 0.5;
-        $e->xPositionEntity($this->pivot, $mid, self::MAX_H * self::BLOCK, $mid);
-        $e->xPositionEntity($this->camH, $mid + cos($t) * $r, (self::MAX_H + 6) * self::BLOCK, $mid + sin($t) * $r);
+        $e->xHideEntity($this->hand);  // no first-person held block in the menu backdrop
+        $B = self::BLOCK;
+        $midx = $this->originX; $midz = $this->originZ;
+        $ground = $this->heightAt($this->cellOf($midx), $this->cellOf($midz));
+        // Deterministic orbit (frame-counted, not wall-clock) starting on a phase that faces
+        // the castle/house cluster, so the menu AND settings backdrops always open on a good,
+        // scenery-filled view instead of whatever direction the clock happened to land on.
+        $this->backdropFrame++;
+        $t = 2.1 + $this->backdropFrame * 0.004;              // slow, calm orbit; phase faces the cluster
+        $r = (int) $this->settings["renderDist"] * $B * 0.5;  // close enough to stay out of the fog
+        // look slightly down at the plaza: village spreads across the lower frame, open sky
+        // (where the menu text sits) fills the top.
+        $e->xPositionEntity($this->pivot, $midx, ($ground + 6) * $B, $midz);
+        $e->xPositionEntity($this->camH, $midx + cos($t) * $r, ($ground + 18) * $B, $midz + sin($t) * $r);
         $e->xPointEntity($this->camH, $this->pivot);
         $this->updateSky();
         $this->updateSkyObjects();

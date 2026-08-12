@@ -220,6 +220,7 @@ final class MinecraftController extends Controller
     /** @var int[] cached minimap cell colours (packed rgb), resampled a few times/sec */
     private array $mmCells = [];
     private int $mmMs = 0;
+    private int $backdropFrame = 0; // deterministic menu/settings backdrop orbit counter
     private int $lastStep = 0;
     private int $mobTimer = 0;
     private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
@@ -452,6 +453,7 @@ final class MinecraftController extends Controller
         // over the village, hide the HUD, and optionally save a clean frame sequence for a GIF.
         $cine = (bool) getenv('CRAFT_CINE');
         $seq  = getenv('CRAFT_SHOTSEQ') ?: '';
+        if (!$cine) { $e->xShowEntity($this->hand); } // the menu backdrop hides it; restore for play
 
         while (true) {
             if ($this->closeRequested()) { $this->quit = true; return; }
