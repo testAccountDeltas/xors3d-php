@@ -108,7 +108,7 @@ final class MinecraftController extends Controller
         ['key' => 'vsync',       'label' => 'VSync',             'type' => 'bool', 'note' => 'restart'],
         ['key' => 'trees',       'label' => 'Tree density',      'type' => 'float', 'min' => 0.0, 'max' => 3.0, 'step' => 0.5, 'note' => 'new world'],
         ['key' => 'water',       'label' => 'Water',             'type' => 'bool', 'note' => 'new world'],
-        ['key' => 'mobs',        'label' => 'Sheep count',       'type' => 'int',  'min' => 0, 'max' => 16, 'step' => 1, 'note' => 'new world'],
+        ['key' => 'mobs',        'label' => 'Animal count',      'type' => 'int',  'min' => 0, 'max' => 24, 'step' => 2, 'note' => 'new world'],
     ];
 
     private Engine $e;
@@ -1120,7 +1120,8 @@ final class MinecraftController extends Controller
             $bx = $this->cellOf($wx); $bz = $this->cellOf($wz);
             $gt = $this->groundTop($bx, $bz);
             if ($this->isWaterAt($wx, $wz) || $this->solidType($bx, $gt + 1, $bz) > 0) { continue; }
-            $this->mobs[] = $this->buildSheep($wx, $wz);
+            $species = ['sheep', 'pig', 'cow', 'chicken', 'rabbit'][mt_rand(0, 4)];
+            $this->mobs[] = $this->buildMob($species, $wx, $wz);
             return true;
         }
         return false;
@@ -1146,32 +1147,87 @@ final class MinecraftController extends Controller
         }
     }
 
-    private function buildSheep(float $wx, float $wz): array
+    /**
+     * Passive animals, built from tinted cubes (no combat). Each part is
+     * [w, h, d, [r,g,b], ox, oy, oz] with sizes in block fractions and offsets in blocks.
+     * @return array<string,array{speed:float,parts:array<int,array>}>
+     */
+    private function mobDefs(): array
+    {
+        return [
+            'sheep' => ['speed' => 0.05, 'parts' => [
+                [1.10, 0.85, 0.75, [235, 235, 230], 0.00, 0.85, 0.00],  // wool body
+                [0.55, 0.55, 0.55, [235, 235, 230], 0.00, 1.05, 0.62],  // head
+                [0.35, 0.35, 0.15, [225, 175, 175], 0.00, 1.00, 0.90],  // muzzle
+                [0.20, 0.55, 0.20, [60, 50, 45], -0.35, 0.28, -0.28],
+                [0.20, 0.55, 0.20, [60, 50, 45],  0.35, 0.28, -0.28],
+                [0.20, 0.55, 0.20, [60, 50, 45], -0.35, 0.28,  0.28],
+                [0.20, 0.55, 0.20, [60, 50, 45],  0.35, 0.28,  0.28],
+            ]],
+            'pig' => ['speed' => 0.06, 'parts' => [
+                [1.00, 0.70, 0.72, [240, 150, 160], 0.00, 0.65, 0.00],  // body
+                [0.55, 0.55, 0.50, [240, 150, 160], 0.00, 0.75, 0.55],  // head
+                [0.30, 0.24, 0.12, [220, 120, 140], 0.00, 0.70, 0.80],  // snout
+                [0.20, 0.35, 0.20, [235, 140, 150], -0.30, 0.18, -0.25],
+                [0.20, 0.35, 0.20, [235, 140, 150],  0.30, 0.18, -0.25],
+                [0.20, 0.35, 0.20, [235, 140, 150], -0.30, 0.18,  0.25],
+                [0.20, 0.35, 0.20, [235, 140, 150],  0.30, 0.18,  0.25],
+            ]],
+            'cow' => ['speed' => 0.04, 'parts' => [
+                [1.25, 0.85, 0.80, [110, 75, 50], 0.00, 0.90, 0.00],    // brown body
+                [0.60, 0.42, 0.42, [235, 235, 230], 0.20, 1.05, 0.10],  // white patch
+                [0.55, 0.55, 0.50, [95, 65, 45], 0.00, 1.05, 0.68],     // head
+                [0.42, 0.30, 0.12, [210, 170, 160], 0.00, 1.00, 0.94],  // muzzle
+                [0.14, 0.18, 0.14, [225, 220, 210], -0.22, 1.28, 0.68], // horn
+                [0.14, 0.18, 0.14, [225, 220, 210],  0.22, 1.28, 0.68], // horn
+                [0.22, 0.60, 0.22, [55, 45, 35], -0.38, 0.30, -0.30],
+                [0.22, 0.60, 0.22, [55, 45, 35],  0.38, 0.30, -0.30],
+                [0.22, 0.60, 0.22, [55, 45, 35], -0.38, 0.30,  0.30],
+                [0.22, 0.60, 0.22, [55, 45, 35],  0.38, 0.30,  0.30],
+            ]],
+            'chicken' => ['speed' => 0.055, 'parts' => [
+                [0.50, 0.50, 0.45, [245, 245, 245], 0.00, 0.50, 0.00],  // body
+                [0.30, 0.30, 0.30, [245, 245, 245], 0.00, 0.74, 0.26],  // head
+                [0.14, 0.12, 0.16, [240, 200, 60], 0.00, 0.72, 0.44],   // beak
+                [0.12, 0.16, 0.10, [220, 60, 60], 0.00, 0.90, 0.24],    // comb
+                [0.10, 0.30, 0.10, [235, 180, 40], -0.14, 0.15, 0.00],  // legs
+                [0.10, 0.30, 0.10, [235, 180, 40],  0.14, 0.15, 0.00],
+            ]],
+            'rabbit' => ['speed' => 0.07, 'parts' => [
+                [0.45, 0.40, 0.55, [180, 150, 120], 0.00, 0.40, 0.00],  // body
+                [0.35, 0.35, 0.35, [185, 155, 125], 0.00, 0.55, 0.36],  // head
+                [0.10, 0.35, 0.08, [185, 155, 125], -0.10, 0.85, 0.36], // ear
+                [0.10, 0.35, 0.08, [185, 155, 125],  0.10, 0.85, 0.36], // ear
+                [0.12, 0.20, 0.12, [175, 145, 115], -0.14, 0.12, -0.15],
+                [0.12, 0.20, 0.12, [175, 145, 115],  0.14, 0.12, -0.15],
+                [0.14, 0.14, 0.24, [175, 145, 115], -0.14, 0.14,  0.18],
+                [0.14, 0.14, 0.24, [175, 145, 115],  0.14, 0.14,  0.18],
+            ]],
+        ];
+    }
+
+    /** Build a passive animal of the given species from tinted cubes. */
+    private function buildMob(string $species, float $wx, float $wz): array
     {
         $e = $this->e; $B = self::BLOCK;
+        $defs = $this->mobDefs();
+        $def = $defs[$species] ?? $defs['sheep'];
+        $tex = $this->mobTex['wool']; // neutral fuzzy base, tinted per part
         $pivot = $e->xCreatePivot();
         $parts = [];
-
-        $part = function (float $w, float $h, float $d, int $tex, float $ox, float $oy, float $oz) use ($e, $pivot, &$parts): void {
+        foreach ($def['parts'] as [$w, $h, $d, $col, $ox, $oy, $oz]) {
             $c = $e->xCreateCube();
             $e->xScaleEntity($c, $this->scale * $w, $this->scale * $h, $this->scale * $d);
             $e->xEntityTexture($c, $tex);
+            $e->xEntityColor($c, $col[0], $col[1], $col[2]);
             $e->xEntityParent($c, $pivot);
-            $e->xPositionEntity($c, $ox, $oy, $oz, 0);
+            $e->xPositionEntity($c, $ox * $B, $oy * $B, $oz * $B, 0);
             $parts[] = $c;
-        };
-
-        $wool = $this->mobTex['wool']; $leg = $this->mobTex['leg']; $face = $this->mobTex['face'];
-        $part(1.1, 0.85, 0.75, $wool, 0,          0.85 * $B, 0);          // body
-        $part(0.55, 0.55, 0.55, $wool, 0,         1.05 * $B, 0.62 * $B);  // head
-        $part(0.35, 0.35, 0.15, $face, 0,         1.00 * $B, 0.90 * $B);  // muzzle
-        foreach ([[-0.35, -0.28], [0.35, -0.28], [-0.35, 0.28], [0.35, 0.28]] as [$lx, $lz]) {
-            $part(0.2, 0.55, 0.2, $leg, $lx * $B, 0.28 * $B, $lz * $B);   // legs
         }
-
         $e->xPositionEntity($pivot, $wx, $this->terrainTopY($wx, $wz), $wz);
         return ['pivot' => $pivot, 'parts' => $parts, 'x' => $wx, 'z' => $wz,
-                'dx' => 0.0, 'dz' => 0.0, 'yaw' => 0.0, 'timer' => 0];
+                'dx' => 0.0, 'dz' => 0.0, 'yaw' => 0.0, 'timer' => 0,
+                'species' => $species, 'speed' => $def['speed']];
     }
 
     /** Topmost solid block cell in a column (from the data model). */
@@ -1241,9 +1297,10 @@ final class MinecraftController extends Controller
 
     private function updateMobs(): void
     {
-        $e = $this->e; $B = self::BLOCK; $spd = 0.05;
+        $e = $this->e; $B = self::BLOCK;
 
         foreach ($this->mobs as &$m) {
+            $spd = $m['speed'] ?? 0.05;
             $curG = $this->groundTop($this->cellOf($m['x']), $this->cellOf($m['z']));
 
             if (--$m['timer'] <= 0) {
@@ -2292,7 +2349,7 @@ final class MinecraftController extends Controller
         $e->xColor(255, 255, 0);
         $e->xText(10, 10, 'FPS: ' . $e->xGetFPS());
         $e->xColor(220, 220, 220);
-        $e->xText(10, 30, 'Chunks: ' . count($this->chunkMesh) . '   Sheep: ' . count($this->mobs));
+        $e->xText(10, 30, 'Chunks: ' . count($this->chunkMesh) . '   Mobs: ' . count($this->mobs));
         $e->xText(10, 50, 'Mode: ' . ($this->fly ? 'Fly (F)' : 'Walk (F)'));
         $e->xText(10, 70, $hasTarget ? 'LMB destroy / RMB place / E door' : 'no target');
         $e->xText(10, 90, 'C: craft menu    Esc: menu');
