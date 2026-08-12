@@ -154,6 +154,10 @@ final class MinecraftController extends Controller
     /** @var array<string,int> "x,y,z" => type (0 = removed): tree + player edits over generated world */ private array $edits = [];
     /** @var array<string,array<string,int>> chunk key => its edits */ private array $editsByChunk = [];
     /** @var array<string,bool> door cell "x,y,z" => open? */ private array $doorOpen = [];
+    /** @var array<string,array{0:int,1:int,2:int}> glowstone cells "x,y,z" => [x,y,z] (light sources) */
+    private array $lightCells = [];
+    /** @var int[] pool of dynamic point-light handles reassigned to the nearest torches */
+    private array $pointLights = [];
     /** @var array<string,bool> chunks whose trees have been generated */ private array $treeGen = [];
     /** @var array<string,bool> chunk keys touched by the tree gen currently running */ private array $treeSpill = [];
     private bool $trackSpill = false;
@@ -251,6 +255,16 @@ final class MinecraftController extends Controller
         $e->xRotateEntity($this->moon, 230, 30, 0);
         $e->xLightColor($this->moon, 0, 0, 0);
         $e->xAmbientLight(120, 120, 130);
+
+        // pool of point lights reassigned each frame to the nearest torches/glowstone
+        // (real additive glow around the player's lights, works in dark caves at night)
+        for ($i = 0; $i < 5; $i++) {
+            $l = $e->xCreateLight(Constants::LIGHT_POINT);
+            $e->xLightColor($l, 255, 205, 130);          // warm torchlight
+            $e->xLightRange($l, 11.0 * self::BLOCK);
+            $e->xHideEntity($l);
+            $this->pointLights[] = $l;
+        }
         $e->xLoadFont('Arial', 14);
 
         $this->buildTemplates($e);
@@ -805,6 +819,7 @@ final class MinecraftController extends Controller
         $this->clearWorld();
         $this->edits = [];
         $this->editsByChunk = [];
+        $this->lightCells = [];
         $this->treeGen = [];
         $this->height = [];
         $this->biome = [];
@@ -1347,6 +1362,32 @@ final class MinecraftController extends Controller
         unset($p);
     }
 
+    /** Reassign the point-light pool to the nearest torches/glowstone around the player. */
+    private function updatePointLights(): void
+    {
+        if ($this->pointLights === []) { return; }
+        $e = $this->e; $B = self::BLOCK;
+        $reach = 26.0 * $B; $reach2 = $reach * $reach;
+        $px = $this->px; $py = $this->py; $pz = $this->pz;
+        $near = [];
+        foreach ($this->lightCells as [$x, $y, $z]) {
+            $wx = $x * $B; $wy = $y * $B; $wz = $z * $B;
+            $dx = $wx - $px; $dy = $wy - $py; $dz = $wz - $pz;
+            $d2 = $dx * $dx + $dy * $dy + $dz * $dz;
+            if ($d2 < $reach2) { $near[] = [$d2, $wx, $wy, $wz]; }
+        }
+        sort($near); // nearest first (by squared distance)
+        foreach ($this->pointLights as $i => $l) {
+            if (isset($near[$i])) {
+                [, $wx, $wy, $wz] = $near[$i];
+                $e->xPositionEntity($l, $wx, $wy + $B * 0.3, $wz);
+                $e->xShowEntity($l);
+            } else {
+                $e->xHideEntity($l);
+            }
+        }
+    }
+
     private function clearMobs(): void
     {
         foreach ($this->mobs as $m) {
@@ -1401,6 +1442,8 @@ final class MinecraftController extends Controller
         $ck = $this->cdiv($x) . "," . $this->cdiv($z);
         $this->editsByChunk[$ck][$k] = $type;
         if ($this->trackSpill) { $this->treeSpill[$ck] = true; }
+        if ($type === 11) { $this->lightCells[$k] = [$x, $y, $z]; } // glowstone = light source
+        else { unset($this->lightCells[$k]); }
     }
 
     /** Bake a tree into the edit overlay (streamed in with its chunk). */
@@ -1948,6 +1991,7 @@ final class MinecraftController extends Controller
         $this->biome = [];
         $this->edits = [];
         $this->editsByChunk = [];
+        $this->lightCells = [];
         $this->treeGen = [];
         foreach (($d['treeGen'] ?? []) as $ck) { $this->treeGen[(string) $ck] = true; }
         foreach (($d['edits'] ?? []) as $k => $type) {
@@ -2278,6 +2322,7 @@ final class MinecraftController extends Controller
             $this->updateWeather();
             $this->updatePuddles();
             $this->updateParticles();
+            $this->updatePointLights();
 
             $cx = (int) ($e->xGraphicsWidth() / 2);
             $cy = (int) ($e->xGraphicsHeight() / 2);
