@@ -165,7 +165,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 48,
-        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 1,
+        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 0,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -217,10 +217,6 @@ final class MinecraftController extends Controller
     private bool $wasGround = true;
     private bool $fallGrace = true; // skip fall damage on the initial spawn drop
     private float $timeShift = 0.0; // day-cycle offset (sleeping in a bed skips to morning)
-    private int $mmImg = 0;         // cached minimap image (rebuilt only when needed)
-    private int $mmBx = PHP_INT_MIN;
-    private int $mmBz = PHP_INT_MIN;
-    private int $mmMs = 0;
     private int $lastStep = 0;
     private int $mobTimer = 0;
     private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
@@ -535,6 +531,7 @@ final class MinecraftController extends Controller
             // C opens the crafting / block menu (assigns a block to the active slot)
             if ($e->xKeyHit(Constants::KEY_C)) { $this->craftMenu(); }
             if ($e->xKeyHit(Constants::KEY_B)) { $this->trySleep(); }
+            if ($e->xKeyHit(Constants::KEY_M)) { $this->settings['minimap'] = (int) $this->settings['minimap'] ? 0 : 1; }
 
             if ($max > 0 && getenv('CRAFT_LOOKUP')) { $e->xRotateEntity($h, -40, 40, 0); }
 
