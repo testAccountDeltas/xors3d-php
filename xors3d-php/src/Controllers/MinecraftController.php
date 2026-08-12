@@ -234,6 +234,7 @@ final class MinecraftController extends Controller
     /** @var array<int,int> */ private array $template = [];
     /** @var array<int,int> */ private array $tex = [];
     private int $waterTpl = 0;
+    private int $waterBrush = 0;
     private int $waterTex = 0;
     /** @var array<int,bool> water entity handle => true */ private array $water = [];
     /** @var array<int,array<int,int>> */ private array $height = [];
@@ -505,6 +506,10 @@ final class MinecraftController extends Controller
             if ($cine) { $this->acc = 0.0; $this->cineCamera($frame, $max); }
             $this->dt = $frameDt; // restore real frame dt for per-frame visuals below
 
+            if ($max > 0 && getenv('CRAFT_FLY')) { // debug travel: fly forward low, look steeply down
+                $this->px += 5.0; $this->pz += 2.0; $this->py = (self::MAX_H + 4) * self::BLOCK;
+                $e->xPositionEntity($h, $this->px, $this->py, $this->pz); $e->xRotateEntity($h, 62, 30, 0);
+            }
             $this->updateStreaming($this->px, $this->pz);
             if ($cine) { $this->flushStreaming(); } // fully build each frame -> no pop-in in the capture
             else { $this->processStreaming(2, 2); } // budgeted (count + time): a few chunks/frame, no hitches

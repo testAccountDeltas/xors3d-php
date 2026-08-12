@@ -13,13 +13,33 @@ use Xors3D\Ffi\Constants;
  */
 trait Chunks
 {
-    private function spawnWater(int $ck0x, int $x, int $z, array &$list): void
+    /**
+     * Build ONE water mesh for the whole chunk (a flat surface quad per sea column, merged
+     * into a single entity) instead of a cube entity per column - collapses up to 64 draw
+     * calls per chunk into one. Returns the mesh handle, or 0 if the chunk has no water.
+     */
+    private function buildWaterMesh(int $x0, int $z0): int
     {
-        $e = $this->e;
-        $w = $e->xCopyEntity($this->waterTpl);
-        $e->xPositionEntity($w, $x * self::BLOCK, self::SEA * self::BLOCK, $z * self::BLOCK);
-        $this->water[$w] = true;
-        $list[] = $w;
+        $e = $this->e; $B = self::BLOCK;
+        $y = self::SEA * $B + $B * 0.5;   // water surface (top of the sea-level block)
+        $h = $B * 0.5;
+        $surf = null; $mesh = 0;
+        for ($x = $x0; $x < $x0 + self::CH; $x++) {
+            for ($z = $z0; $z < $z0 + self::CH; $z++) {
+                if ($this->heightAt($x, $z) >= self::SEA) { continue; }
+                if ($mesh === 0) { $mesh = $e->xCreateMesh(); $surf = $e->xCreateSurface($mesh, $this->waterBrush); }
+                $cx = $x * $B; $cz = $z * $B;
+                $a0 = $e->xAddVertex($surf, $cx - $h, $y, $cz - $h, 0, 0);
+                $a1 = $e->xAddVertex($surf, $cx + $h, $y, $cz - $h, 1, 0);
+                $a2 = $e->xAddVertex($surf, $cx + $h, $y, $cz + $h, 1, 1);
+                $a3 = $e->xAddVertex($surf, $cx - $h, $y, $cz + $h, 0, 1);
+                foreach ([$a0, $a1, $a2, $a3] as $vi) { $e->xVertexNormal($surf, $vi, 0.0, 1.0, 0.0); }
+                $e->xAddTriangle($surf, $a0, $a1, $a2);
+                $e->xAddTriangle($surf, $a0, $a2, $a3);
+            }
+        }
+        if ($mesh !== 0) { $e->xEntityTexture($mesh, $this->waterTex); }
+        return $mesh;
     }
 
     // ------------------------------------------------ greedy chunk meshing
@@ -328,11 +348,8 @@ trait Chunks
 
         $list = [];
         if ((int) $this->settings['water']) {
-            for ($x = $x0; $x < $x0 + self::CH; $x++) {
-                for ($z = $z0; $z < $z0 + self::CH; $z++) {
-                    if ($this->heightAt($x, $z) < self::SEA) { $this->spawnWater($cx, $x, $z, $list); }
-                }
-            }
+            $wm = $this->buildWaterMesh($x0, $z0);   // one merged water mesh for the chunk
+            if ($wm !== 0) { $this->water[$wm] = true; $list[] = $wm; }
         }
 
         $this->chunkMesh[$ck] = $mesh;
@@ -358,8 +375,7 @@ trait Chunks
         $cosLim = 0.20;                // ~78deg half-cone
         $half = self::CH * $B * 0.5;
         foreach (array_keys($this->loaded) as $ck) {
-            $m = $this->chunkMesh[$ck] ?? 0;
-            if ($m === 0) { continue; }
+            if (!isset($this->chunkMesh[$ck])) { continue; }
             [$cx, $cz] = explode(',', $ck);
             $wx = (int) $cx * self::CH * $B + $half - $px;
             $wz = (int) $cz * self::CH * $B + $half - $pz;
@@ -367,7 +383,8 @@ trait Chunks
             $vis = $d < $near || ($wx * $fx + $wz * $fz) / max(1e-3, $d) > $cosLim;
             if (($this->chunkVis[$ck] ?? true) !== $vis) {   // only toggle on change
                 $this->chunkVis[$ck] = $vis;
-                if ($vis) { $e->xShowEntity($m); } else { $e->xHideEntity($m); }
+                // hide/show the whole chunk (mesh + its water) so off-screen water doesn't draw
+                foreach ($this->chunk[$ck] ?? [] as $h) { if ($vis) { $e->xShowEntity($h); } else { $e->xHideEntity($h); } }
             }
         }
     }

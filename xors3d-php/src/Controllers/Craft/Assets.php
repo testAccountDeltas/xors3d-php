@@ -77,6 +77,12 @@ trait Assets
         $e->xEntityAlpha($this->waterTpl, 0.7);
         $e->xEntityTexture($this->waterTpl, $this->waterTex);
         $e->xHideEntity($this->waterTpl);
+        // water brush: all of a chunk's water columns are merged into ONE mesh surface
+        // (one draw call per chunk) instead of a separate cube entity per column.
+        $this->waterBrush = $e->xCreateBrush();
+        $e->xBrushTexture($this->waterBrush, $this->waterTex);
+        $e->xBrushColor($this->waterBrush, 120, 160, 255);
+        $e->xBrushAlpha($this->waterBrush, 0.7);
     }
 
     private function createHand(Engine $e, int $camera): void
