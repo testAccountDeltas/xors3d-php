@@ -215,7 +215,8 @@ trait Ui
         $e->xText(10, 10, 'FPS: ' . $e->xGetFPS());
         $e->xColor(220, 220, 220);
         $e->xText(10, 30, 'Chunks: ' . count($this->chunkMesh) . '   Mobs: ' . count($this->mobs));
-        $e->xText(10, 50, 'Mode: ' . ($this->fly ? 'Fly (F)' : 'Walk (F)'));
+        $e->xText(10, 50, 'Mode: ' . ($this->fly ? 'Fly (F)' : 'Walk (F)')
+            . '   XZ: ' . $this->cellOf($this->px) . ',' . $this->cellOf($this->pz));
         $e->xText(10, 70, $hasTarget ? 'LMB destroy / RMB place / E door-chest' : 'no target');
         $e->xText(10, 90, 'C: craft   B: sleep   Esc: menu');
         if ($this->status !== '') { $e->xColor(255, 235, 150); $e->xText(10, 110, $this->status); }

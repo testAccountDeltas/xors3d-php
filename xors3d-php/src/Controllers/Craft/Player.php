@@ -41,6 +41,7 @@ trait Player
         }
 
         $spd = $fly ? self::SPD_FLY : self::SPD_WALK;
+        if (!$fly && $e->xKeyDown(Constants::KEY_LSHIFT)) { $spd *= 1.6; } // sprint on foot
         $mx = $my = $mz = 0.0;
         if ($e->xKeyDown(Constants::KEY_W)) { $mx += $fwx; $my += $fwy; $mz += $fwz; }
         if ($e->xKeyDown(Constants::KEY_S)) { $mx -= $fwx; $my -= $fwy; $mz -= $fwz; }
