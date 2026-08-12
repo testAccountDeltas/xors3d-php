@@ -313,7 +313,9 @@ final class MinecraftController extends Controller
     // per-pixel block shader
     private int $blockFX = 0;
     private bool $blockOK = false;   // GPU can run the technique
+    private bool $blockCutOK = false; // GPU can run the alpha-test (glass) technique
     private bool $blockShade = false; // shader is on (supported + enabled)
+    private bool $meshHasGlass = false; // last-built chunk mesh contains glass (picks technique)
     private int $bfxMs = 0;          // throttle for constant refresh
     /** @var array<string,mixed> cached block-shader lighting constants */
     private array $bfx = [];

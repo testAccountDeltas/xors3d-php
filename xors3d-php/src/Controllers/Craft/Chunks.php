@@ -215,6 +215,9 @@ trait Chunks
                 }
             }
         }
+        // remember whether this mesh has glass (type 10) so the shader can pick the fast
+        // no-clip technique for the opaque majority (keeps early-Z under overdraw).
+        $this->meshHasGlass = isset($surf[10]);
     }
 
     /** Build (or rebuild) one chunk as a single greedy-merged mesh + water. */

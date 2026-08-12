@@ -60,10 +60,8 @@ VOut VS(VIn IN) {
     return O;
 }
 
-float4 PS(VOut IN) : COLOR {
-    float4 t = tex2D(S, IN.UV);
-    clip(t.a - 0.5);                          // masked transparency (glass holes)
-
+// shared lighting for a sampled texel
+float3 shade(VOut IN, float4 t) {
     float3 n = normalize(IN.Nrm);
     float  d = dot(n, SunDir) * 0.5 + 0.5;    // half-Lambert: soft, wraps past 90deg
     d = d * d;                                // gentle contrast
@@ -77,16 +75,36 @@ float4 PS(VOut IN) : COLOR {
     col += t.rgb * saturate(IN.Emit) * float3(1.0, 0.80, 0.48) * 2.1;
 
     float f = saturate((IN.Fog - FogRange.x) / (FogRange.y - FogRange.x));
-    col = lerp(col, FogClr, f);
-    return float4(col, 1.0);
+    return lerp(col, FogClr, f);
 }
 
-technique Block {
+// Opaque chunks (no glass): NO clip() -> keeps hardware early-Z / hierarchical-Z, which is
+// the fast path under the heavy overdraw of a first-person voxel view.
+float4 PS(VOut IN) : COLOR {
+    return float4(shade(IN, tex2D(S, IN.UV)), 1.0);
+}
+// Chunks that contain glass: alpha-test clip so the masked window texels punch through.
+float4 PScut(VOut IN) : COLOR {
+    float4 t = tex2D(S, IN.UV);
+    clip(t.a - 0.5);
+    return float4(shade(IN, t), 1.0);
+}
+
+technique Block {          // fast path, opaque chunks
     pass p0 {
         AlphaBlendEnable = false;
         ZEnable          = true;
         CullMode         = None;   // chunk meshes are double-wound already
         vertexshader = compile vs_2_0 VS();
         pixelshader  = compile ps_2_0 PS();
+    }
+}
+technique BlockCut {       // chunks with glass (needs alpha-test holes)
+    pass p0 {
+        AlphaBlendEnable = false;
+        ZEnable          = true;
+        CullMode         = None;
+        vertexshader = compile vs_2_0 VS();
+        pixelshader  = compile ps_2_0 PScut();
     }
 }

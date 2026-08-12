@@ -27,6 +27,7 @@ trait BlockShader
             $this->blockFX = $e->xLoadFXFile($fx);
             if ($this->blockFX !== 0 && $e->xValidateEffectTechnique($this->blockFX, 'Block')) {
                 $this->blockOK = true;
+                $this->blockCutOK = (bool) $e->xValidateEffectTechnique($this->blockFX, 'BlockCut');
             }
         }
         $this->refreshBlockShade();
@@ -44,7 +45,10 @@ trait BlockShader
     {
         $e = $this->e;
         $e->xSetEntityEffect($mesh, $this->blockFX);
-        $e->xSetEffectTechnique($mesh, 'Block');
+        // opaque chunks use the fast no-clip 'Block'; only glass-bearing chunks pay for
+        // the alpha-test 'BlockCut' (clip() disables early-Z, costly under overdraw).
+        $tech = ($this->meshHasGlass && $this->blockCutOK) ? 'BlockCut' : 'Block';
+        $e->xSetEffectTechnique($mesh, $tech);
         $e->xSetEffectMatrixSemantic($mesh, 'MatWorldViewProj', Constants::WORLDVIEWPROJ);
         $e->xSetEffectMatrixSemantic($mesh, 'MatWorld', Constants::WORLD);
         $this->applyBlockFXConsts($mesh);
