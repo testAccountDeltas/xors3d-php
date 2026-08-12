@@ -198,9 +198,16 @@ trait Structures
     {
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
         $D = self::TREE_DIST;
+        // Memoize treeStrength over the chunk + its TREE_DIST border: the Poisson-disk scan
+        // queries each cell ~ (2D+1)^2 times, so without caching the same hash/height work
+        // is redone dozens of times per cell.
+        $ts = [];
+        $str = function (int $x, int $z) use (&$ts): float {
+            return $ts["$x,$z"] ??= $this->treeStrength($x, $z);
+        };
         for ($x = $x0; $x < $x0 + self::CH; $x++) {
             for ($z = $z0; $z < $z0 + self::CH; $z++) {
-                $pri = $this->treeStrength($x, $z);
+                $pri = $str($x, $z);
                 if ($pri < 0.0) { continue; }
                 // Poisson-disk spacing: only plant if this is the strongest candidate in
                 // a TREE_DIST radius, so no two trunks land close enough to overlap.
@@ -208,7 +215,7 @@ trait Structures
                 for ($nx = $x - $D; $nx <= $x + $D && $win; $nx++) {
                     for ($nz = $z - $D; $nz <= $z + $D; $nz++) {
                         if ($nx === $x && $nz === $z) { continue; }
-                        if ($this->treeStrength($nx, $nz) > $pri) { $win = false; break; }
+                        if ($str($nx, $nz) > $pri) { $win = false; break; }
                     }
                 }
                 if ($win) { $this->plantTreeData($x, $this->heightAt($x, $z) + 1, $z); }

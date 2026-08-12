@@ -420,8 +420,12 @@ final class MinecraftController extends Controller
         $this->e->xPositionEntity($this->camH, $this->px, $this->py + self::EYE, $this->pz);
         $this->streamCX = PHP_INT_MAX;              // force streaming refresh
         $this->updateStreaming($this->px, $this->pz); // queue the world around spawn
-        $this->processStreaming(12, 0);            // build just the near ring now (ground under
-                                                   // the player); the rest streams in per-frame
+        // Pre-build the whole visible area during the (already-present) spawn load. The
+        // spawn plaza is full of heavy chunks - the floating island makes very tall meshes
+        // and the lamps/castle bake a lot of block-light - so building them here (a one-time
+        // load pause) avoids multi-hundred-ms hitches when you fly around them afterwards.
+        // Fresh terrain you explore later still streams in per-frame (time-budgeted).
+        $this->flushStreaming();
         $this->clearMobs();                        // sheep re-stream around the new spot
         $this->mobTimer = 0;
         $seed = min(4, (int) $this->settings['mobs']);
@@ -476,7 +480,7 @@ final class MinecraftController extends Controller
             $this->dt = $frameDt; // restore real frame dt for per-frame visuals below
 
             $this->updateStreaming($this->px, $this->pz);
-            $this->processStreaming(2, 2); // budgeted: build a few chunks/frame, no hitches
+            $this->processStreaming(2, 2); // budgeted (count + time): a few chunks/frame, no hitches
             $this->animateWater();
             $this->streamMobs();
             $this->updateMobs();

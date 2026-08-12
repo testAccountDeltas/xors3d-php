@@ -174,7 +174,8 @@ trait Chunks
     private function bakeBlockLite(int $x0, int $z0): void
     {
         $this->blockLite = [];
-        $R = 7;
+        $R = 5; // splat radius: R^3 grows fast, so 5 (vs 7) roughly thirds the bake cost near
+                // lamp-dense areas (plaza/castle) while keeping a soft torch glow.
         // Precompute the radial falloff kernel ONCE (offset + intensity for every cell
         // within R): each light source is then just a cheap splat with no per-cell sqrt.
         static $kernel = null;
@@ -256,11 +257,13 @@ trait Chunks
         $this->meshCk[$mesh] = $ck;
         $this->chunk[$ck] = array_merge([$mesh], $list);
 
-        // rebuild already-loaded neighbours that received spilled tree blocks
+        // Queue (don't synchronously rebuild) already-loaded neighbours that received
+        // spilled tree/structure blocks. A big blueprint spills into many chunks; rebuilding
+        // them all in this one frame caused a multi-hundred-ms freeze. rebuildQ drains a few
+        // per frame instead, so the border faces fill in over the next frames (no hitch).
         foreach (array_keys($spill) as $nk) {
             if ($nk === $ck || !isset($this->loaded[$nk]) || !isset($this->chunkMesh[$nk])) { continue; }
-            [$ncx, $ncz] = array_map('intval', explode(',', $nk));
-            $this->buildChunkMesh($ncx, $ncz); // treeGen already set -> no re-gen, no recursion
+            $this->rebuildQ[$nk] = true; // treeGen already set -> no re-gen when it drains
         }
     }
 
@@ -332,10 +335,19 @@ trait Chunks
 
     /**
      * Build up to $load queued chunks (nearest to the player first) and rebuild up to
-     * $rebuild pending chunks this frame. Keeps per-frame work bounded => no hitches.
+     * $rebuild pending chunks this frame. In addition to the count caps, the work is
+     * TIME-budgeted: once ~6ms of chunk work has been spent this call, it stops early and
+     * leaves the rest for the next frame. Chunk cost varies wildly (an empty plains chunk
+     * is cheap; one carrying a tall blueprint is not), so a fixed count would still let two
+     * heavy chunks land in one frame and stutter. The time budget bounds the per-frame cost
+     * regardless of how heavy the individual chunks are. flushStreaming() passes big counts
+     * (>=32) which disables the budget so menus/screenshots can drain everything at once.
      */
     private function processStreaming(int $load, int $rebuild): void
     {
+        $budgeted = ($load < 32 && $rebuild < 32);
+        $deadline = $budgeted ? microtime(true) + 0.006 : PHP_FLOAT_MAX;
+
         if ($this->loadQ !== [] && $load > 0) {
             $pcx = $this->streamCX; $pcz = $this->streamCZ;
             $keys = array_keys($this->loadQ);
@@ -345,22 +357,28 @@ trait Chunks
                 $db = ((int) $bx - $pcx) ** 2 + ((int) $bz - $pcz) ** 2;
                 return $da <=> $db;
             });
+            $built = 0;
             foreach ($keys as $ck) {
                 if ($load-- <= 0) { break; }
+                if ($built > 0 && microtime(true) >= $deadline) { break; } // spent our slice; always build >=1
                 unset($this->loadQ[$ck]);
                 if (!isset($this->loaded[$ck])) {
                     [$cx, $cz] = explode(',', $ck);
                     $this->loadChunk((int) $cx, (int) $cz);
+                    $built++;
                 }
             }
         }
         if ($this->rebuildQ !== [] && $rebuild > 0) {
+            $rb = 0;
             foreach (array_keys($this->rebuildQ) as $ck) {
                 if ($rebuild-- <= 0) { break; }
+                if ($rb > 0 && microtime(true) >= $deadline) { break; } // stay inside the frame budget
                 unset($this->rebuildQ[$ck]);
                 if (isset($this->loaded[$ck])) {
                     [$cx, $cz] = explode(',', $ck);
                     $this->buildChunkMesh((int) $cx, (int) $cz);
+                    $rb++;
                 }
             }
         }
