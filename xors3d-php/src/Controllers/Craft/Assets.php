@@ -17,7 +17,7 @@ trait Assets
 
     private function loadSounds(Engine $e): void
     {
-        $dir = dirname(__DIR__, 2) . '/assets/sounds/';
+        $dir = dirname(__DIR__, 3) . '/assets/sounds/';
         if (is_file($dir . 'break.wav'))   { $this->sndBreak   = $e->xLoadSound($dir . 'break.wav'); }
         if (is_file($dir . 'place.wav'))   { $this->sndPlace   = $e->xLoadSound($dir . 'place.wav'); }
         if (is_file($dir . 'step.wav'))    { $this->sndStep    = $e->xLoadSound($dir . 'step.wav'); }
@@ -44,7 +44,7 @@ trait Assets
 
     private function buildTemplates(Engine $e): void
     {
-        $base = dirname(__DIR__, 2) . '/assets/blocks/';
+        $base = dirname(__DIR__, 3) . '/assets/blocks/';
         foreach (self::TYPES as $id => [$name, $file]) {
             $cube = $e->xCreateCube();
             if ($id === 1) {

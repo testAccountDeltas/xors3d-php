@@ -43,7 +43,7 @@ trait Structures
     {
         static $cache = [];
         if (array_key_exists($name, $cache)) { return $cache[$name]; }
-        $f = dirname(__DIR__, 2) . '/assets/structures/' . $name . '.json';
+        $f = dirname(__DIR__, 3) . '/assets/structures/' . $name . '.json';
         $d = is_file($f) ? json_decode((string) file_get_contents($f), true) : null;
         return $cache[$name] = (is_array($d) ? $d : null);
     }

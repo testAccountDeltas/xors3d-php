@@ -17,7 +17,7 @@ trait Sky
     /** Create the visible sun/moon discs and a few drifting clouds (fog-immune). */
     private function createSky(Engine $e): void
     {
-        $sky = dirname(__DIR__, 2) . '/assets/sky/';
+        $sky = dirname(__DIR__, 3) . '/assets/sky/';
         $fxSky = Constants::FX_FULLBRIGHT + Constants::FX_DISABLEFOG;
 
         $this->sunDisc = $e->xCreateSprite();

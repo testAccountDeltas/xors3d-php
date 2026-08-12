@@ -205,7 +205,7 @@ trait World
 
     // ============================================================ save / load
 
-    private function worldFile(): string { return dirname(__DIR__, 2) . '/craft-world.json'; }
+    private function worldFile(): string { return dirname(__DIR__, 3) . '/craft-world.json'; }
 
     private function saveWorld(): void
     {

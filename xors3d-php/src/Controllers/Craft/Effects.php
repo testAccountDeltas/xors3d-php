@@ -125,7 +125,7 @@ trait Effects
 
     private function setupGodRays(Engine $e): void
     {
-        $fx = dirname(__DIR__, 2) . '/assets/shaders/GodRays.fx';
+        $fx = dirname(__DIR__, 3) . '/assets/shaders/GodRays.fx';
         if (!is_file($fx)) { $this->godOK = false; return; }
         $this->godFX = $e->xLoadFXFile($fx);
         if (!$e->xValidateEffectTechnique($this->godFX, 'Rays')) {
