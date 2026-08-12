@@ -68,7 +68,10 @@ float4 PS(VOut IN) : COLOR {
     float3 amb = lerp(GndAmb, SkyAmb, h);     // hemispheric fill
     float3 light = amb + SunClr * d;
 
-    float3 col = t.rgb * IN.Col.rgb * light;  // baked AO/skylight/torch * soft light
+    float3 col = t.rgb * IN.Col.rgb * light;  // baked AO/skylight * soft day/night light
+    // torch/glowstone emission (vertex alpha): warm light added on top, independent of
+    // time of day so building lights stay lit at night.
+    col += t.rgb * IN.Col.a * float3(1.0, 0.80, 0.48) * 1.35;
 
     float f = saturate((IN.Fog - FogRange.x) / (FogRange.y - FogRange.x));
     col = lerp(col, FogClr, f);

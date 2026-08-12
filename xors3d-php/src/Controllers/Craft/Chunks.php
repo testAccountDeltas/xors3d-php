@@ -58,27 +58,31 @@ trait Chunks
             return $vol[(($x - $xmin) * $nyv + ($y - $ymin)) * $nzv + ($z - $zmin)];
         };
 
-        // baked skylight: a face is bright if the air cell it faces sees open sky, dark
-        // otherwise (caves / under overhangs / indoors). Glowstone always glows. The
-        // value is a vertex-colour multiplier on top of the dynamic day/night lighting.
+        // Baked light is split into two parts so the block shader can treat them
+        // differently: SKYLIGHT (open sky vs shadow) modulates the day/night lit surface,
+        // while TORCH glow is EMISSIVE - it must add regardless of time of day, otherwise
+        // building lights vanish at night when the ambient term is low. Skylight goes in the
+        // vertex RGB; torch emission goes in the vertex ALPHA (read as emissive by the shader).
         $colTop = [];
         $topOf = function (int $ax, int $az) use (&$colTop): int {
             $k = "$ax,$az";
             return $colTop[$k] ??= $this->groundTop($ax, $az);
         };
-        $lightOf = function (int $ax, int $ay, int $az, int $ftype) use ($topOf): int {
-            if ($ftype === 11) { return 255; }               // glowstone emits
-            $v = ($ay > $topOf($ax, $az)) ? 255 : 77;        // skylight: open sky vs shadowed
-            $bl = $this->blockLite["$ax,$ay,$az"] ?? 0.0;    // baked glowstone glow
-            if ($bl > 0.0) { $blv = (int) (77 + $bl * 178); if ($blv > $v) { $v = $blv; } }
-            return $v;
+        $lightOf = function (int $ax, int $ay, int $az) use ($topOf): int {
+            return ($ay > $topOf($ax, $az)) ? 255 : 77;      // skylight: open sky vs shadowed
+        };
+        $emitOf = function (int $ax, int $ay, int $az, int $ftype): int {
+            if ($ftype === 11) { return 255; }               // glowstone block face glows fully
+            $bl = $this->blockLite["$ax,$ay,$az"] ?? 0.0;    // baked torch/glowstone glow field
+            return $bl > 0.0 ? (int) ($bl * 255) : 0;
         };
 
         for ($d = 0; $d < 3; $d++) {
             $u = ($d + 1) % 3; $v = ($d + 2) % 3;
             $dd = $dims[$d]; $du = $dims[$u]; $dv = $dims[$v];
             $mask = array_fill(0, $du * $dv, 0);
-            $lite = array_fill(0, $du * $dv, 255);
+            $lite = array_fill(0, $du * $dv, 255); // skylight visibility per face
+            $emsk = array_fill(0, $du * $dv, 0);   // torch emissive per face (0..255)
             $aomk = array_fill(0, $du * $dv, 0xFF); // packed 4-corner AO (2 bits each), 0xFF = no occlusion
 
             // ambient-occlusion of one vertex from its two edge neighbours + diagonal corner
@@ -100,13 +104,13 @@ trait Chunks
                         // its neighbours still draw their faces and you can see through windows.
                         $oa = ($a > 0 && $a !== 10);   // a is opaque
                         $ob = ($b > 0 && $b !== 10);   // b is opaque
-                        $mv = 0; $lv = 255;
+                        $mv = 0; $lv = 255; $ev = 0;
                         if ($oa && $ob) { $mv = 0; }                        // both opaque: hidden
-                        elseif ($oa)    { $mv = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a; $lv = $lightOf($bx, $by, $bz, $a); }
-                        elseif ($ob)    { $mv = -$b; $lv = $lightOf($ax, $ay, $az, $b); }
-                        elseif ($a === 10 && $b !== 10) { $mv = $a;  $lv = $lightOf($bx, $by, $bz, 10); }
-                        elseif ($b === 10 && $a !== 10) { $mv = -$b; $lv = $lightOf($ax, $ay, $az, 10); }
-                        $mask[$n] = $mv; $lite[$n] = $lv;
+                        elseif ($oa)    { $mv = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a; $lv = $lightOf($bx, $by, $bz); $ev = $emitOf($bx, $by, $bz, $a); }
+                        elseif ($ob)    { $mv = -$b; $lv = $lightOf($ax, $ay, $az); $ev = $emitOf($ax, $ay, $az, $b); }
+                        elseif ($a === 10 && $b !== 10) { $mv = $a;  $lv = $lightOf($bx, $by, $bz); $ev = $emitOf($bx, $by, $bz, 10); }
+                        elseif ($b === 10 && $a !== 10) { $mv = -$b; $lv = $lightOf($ax, $ay, $az); $ev = $emitOf($ax, $ay, $az, 10); }
+                        $mask[$n] = $mv; $lite[$n] = $lv; $emsk[$n] = $ev;
 
                         // per-corner AO from the neighbours on the exposed (air) side of the face
                         if ($mv !== 0 && $aoOn) {
@@ -133,15 +137,16 @@ trait Chunks
                     while ($i < $du) {
                         $c = $mask[$n + $i];
                         if ($c === 0) { $i++; continue; }
-                        $lc = $lite[$n + $i];   // merge only faces with the same light AND AO,
-                        $ac = $aomk[$n + $i];   // so a merged quad's corner shading stays uniform
+                        $lc = $lite[$n + $i];   // merge only faces with the same light, emit AND AO,
+                        $ec = $emsk[$n + $i];   // so a merged quad's corner shading stays uniform
+                        $ac = $aomk[$n + $i];
                         $w = 1;
-                        while ($i + $w < $du && $mask[$n + $i + $w] === $c && $lite[$n + $i + $w] === $lc && $aomk[$n + $i + $w] === $ac) { $w++; }
+                        while ($i + $w < $du && $mask[$n + $i + $w] === $c && $lite[$n + $i + $w] === $lc && $emsk[$n + $i + $w] === $ec && $aomk[$n + $i + $w] === $ac) { $w++; }
                         $hgt = 1; $stop = false;
                         while ($j + $hgt < $dv) {
                             for ($k = 0; $k < $w; $k++) {
                                 $m = $n + $i + $k + $hgt * $du;
-                                if ($mask[$m] !== $c || $lite[$m] !== $lc || $aomk[$m] !== $ac) { $stop = true; break; }
+                                if ($mask[$m] !== $c || $lite[$m] !== $lc || $emsk[$m] !== $ec || $aomk[$m] !== $ac) { $stop = true; break; }
                             }
                             if ($stop) { break; }
                             $hgt++;
@@ -181,11 +186,16 @@ trait Chunks
                             0.55 + 0.15 * (($ac >> 4) & 3),
                             0.55 + 0.15 * (($ac >> 6) & 3),
                         ];
+                        // Shader mode: RGB carries skylight only, ALPHA carries torch emission
+                        // (the shader adds it back independent of day/night). Fallback mode:
+                        // fold the torch glow into RGB (fixed-function has no emissive term).
+                        if ($this->blockShade) { $base = $lc; $alpha = $ec / 255.0; }
+                        else                    { $base = max($lc, $ec); $alpha = 1.0; }
                         $verts = [$a0, $a1, $a2, $a3];
                         foreach ($verts as $ci => $vi) {
-                            $cv = (int) min(255.0, $lc * $dir * $aoF[$ci]);
+                            $cv = (int) min(255.0, $base * $dir * $aoF[$ci]);
                             $e->xVertexNormal($s, $vi, $nrm[0], $nrm[1], $nrm[2]);
-                            $e->xVertexColor($s, $vi, $cv, $cv, $cv);
+                            $e->xVertexColor($s, $vi, $cv, $cv, $cv, $alpha);
                         }
                         // both windings so the face is never culled from the outside,
                         // regardless of per-axis chirality (backface culling keeps one)
