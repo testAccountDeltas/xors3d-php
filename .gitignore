@@ -2,6 +2,9 @@
 xors3d-php/craft-settings.json
 xors3d-php/craft-world.json
 
+# personal project notes (not for the public repo)
+PROJECT_NOTES.md
+
 # junk
 Thumbs.db
 *.log
