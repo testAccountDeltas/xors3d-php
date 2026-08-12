@@ -66,10 +66,19 @@ final class MinecraftController extends Controller
         12 => ['Diamond',   'diamond_ore.png'],
         13 => ['Coal',      'coal.png'],
         14 => ['Iron',      'iron.png'],
+        15 => ['Cobblestone',   'cobblestone.png'],
+        16 => ['Stone Bricks',  'stonebrick.png'],
+        17 => ['Oak Planks',    'oakplanks.png'],
+        18 => ['Dark Planks',   'darkplanks.png'],
+        19 => ['Bookshelf',     'bookshelf.png'],
+        20 => ['Red Wool',      'redwool.png'],
+        21 => ['White Wool',    'whitewool.png'],
+        22 => ['Chiseled Stone', 'chiseledstone.png'],
     ];
 
-    /** Selectable blocks (hotbar / wheel), by type id. */
-    private const HOTBAR = [1, 2, 3, 4, 5, 9, 10, 11, 12];
+    /** Selectable blocks (hotbar / wheel), by type id. Keys 1-9 pick the first nine;
+     *  the mouse wheel cycles through the rest (building blocks). */
+    private const HOTBAR = [1, 2, 3, 5, 15, 16, 17, 10, 11, 18, 19, 20, 21, 22];
 
     /** @var array<string,int|float> */
     private array $settings = [
@@ -782,26 +791,176 @@ final class MinecraftController extends Controller
     private function generateData(): void
     {
         $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
+        $this->buildStructures();
+    }
+
+    // ---------------------------------------------------- spawn structures
+
+    /** Fill a solid box of one block type into the edit overlay. */
+    private function fillBox(int $x0, int $y0, int $z0, int $x1, int $y1, int $z1, int $t): void
+    {
+        for ($x = $x0; $x <= $x1; $x++) {
+            for ($y = $y0; $y <= $y1; $y++) {
+                for ($z = $z0; $z <= $z1; $z++) { $this->setEdit($x, $y, $z, $t); }
+            }
+        }
+    }
+
+    /** Vertical walls only (perimeter) between two corners. */
+    private function walls(int $x0, int $y0, int $z0, int $x1, int $y1, int $z1, int $t): void
+    {
+        for ($x = $x0; $x <= $x1; $x++) {
+            for ($z = $z0; $z <= $z1; $z++) {
+                if ($x !== $x0 && $x !== $x1 && $z !== $z0 && $z !== $z1) { continue; }
+                for ($y = $y0; $y <= $y1; $y++) { $this->setEdit($x, $y, $z, $t); }
+            }
+        }
+    }
+
+    /** Build the flat plaza and the three showcase buildings around spawn (0,0). */
+    private function buildStructures(): void
+    {
+        $ox = $this->cellOf($this->originX);
+        $oz = $this->cellOf($this->originZ);
+        $base = max(self::SEA + 2, $this->heightAt($ox, $oz));
+
+        // level a flat grass plaza so buildings sit evenly and the player lands clear
+        $pr = 15;
+        for ($x = $ox - $pr; $x <= $ox + $pr; $x++) {
+            for ($z = $oz - $pr; $z <= $oz + $pr; $z++) {
+                $this->setEdit($x, $base - 1, $z, 2);           // dirt sub-surface
+                $this->setEdit($x, $base, $z, 1);               // grass top
+                for ($y = $base + 1; $y <= $base + 9; $y++) { $this->setEdit($x, $y, $z, 0); } // cut hills
+            }
+        }
+
+        $this->buildHouse($ox - 12, $base, $oz - 4);
+        $this->buildCastle($ox + 4, $base, $oz - 5);
+        $this->buildTower($ox - 3, $base, $oz + 9);
+    }
+
+    /** Cosy wooden house: oak walls, log corners, glass windows, door, roof + interior. */
+    private function buildHouse(int $x0, int $base, int $z0): void
+    {
+        $w = 7; $d = 8; $wh = 4;
+        $x1 = $x0 + $w; $z1 = $z0 + $d;
+        $this->fillBox($x0, $base, $z0, $x1, $base, $z1, 17);          // plank floor
+        $this->walls($x0, $base + 1, $z0, $x1, $base + $wh, $z1, 17);  // plank walls
+        // log corner pillars
+        foreach ([[$x0, $z0], [$x1, $z0], [$x0, $z1], [$x1, $z1]] as [$cx, $cz]) {
+            $this->fillBox($cx, $base + 1, $cz, $cx, $base + $wh, $cz, 8);
+        }
+        // glass windows on the side walls
+        $my = $base + 2;
+        foreach ([$z0 + 2, $z0 + 5] as $wz) {
+            $this->setEdit($x0, $my, $wz, 10); $this->setEdit($x1, $my, $wz, 10);
+        }
+        $this->setEdit($x0 + 3, $my, $z0, 10); $this->setEdit($x0 + 4, $my, $z1, 10);
+        // door: 2-high gap in the front (-z) wall
+        $dx = $x0 + 3;
+        $this->setEdit($dx, $base + 1, $z0, 0); $this->setEdit($dx, $base + 2, $z0, 0);
+        // dark-plank flat roof with a small overhang
+        $this->fillBox($x0 - 1, $base + $wh + 1, $z0 - 1, $x1 + 1, $base + $wh + 1, $z1 + 1, 18);
+        // interior: light, bookshelves and a bed
+        $this->setEdit($x0 + 3, $base + $wh, $z0 + 4, 11);            // glowstone lamp on ceiling
+        $this->fillBox($x1 - 1, $base + 1, $z1 - 1, $x1 - 1, $base + 2, $z1 - 1, 19); // bookshelf stack
+        $this->setEdit($x0 + 1, $base + 1, $z1 - 1, 20);             // bed (red wool)
+        $this->setEdit($x0 + 2, $base + 1, $z1 - 1, 21);             // pillow (white wool)
+    }
+
+    /** Stone-brick castle: walls, battlements, four corner towers, gate + throne room. */
+    private function buildCastle(int $x0, int $base, int $z0): void
+    {
+        $w = 10; $d = 10; $wh = 6;
+        $x1 = $x0 + $w; $z1 = $z0 + $d;
+        $this->fillBox($x0, $base, $z0, $x1, $base, $z1, 15);          // cobblestone floor
+        $this->walls($x0, $base + 1, $z0, $x1, $base + $wh, $z1, 16);  // stone-brick walls
+        // battlements (merlons) along the top edge, every other block
+        for ($x = $x0; $x <= $x1; $x++) {
+            for ($z = $z0; $z <= $z1; $z++) {
+                if ($x !== $x0 && $x !== $x1 && $z !== $z0 && $z !== $z1) { continue; }
+                if ((($x + $z) & 1) === 0) { $this->setEdit($x, $base + $wh + 1, $z, 16); }
+            }
+        }
+        // taller corner towers
+        foreach ([[$x0, $z0], [$x1, $z0], [$x0, $z1], [$x1, $z1]] as [$cx, $cz]) {
+            $tx0 = max($x0, $cx - 1); $tx1 = min($x1, $cx + 1);
+            $tz0 = max($z0, $cz - 1); $tz1 = min($z1, $cz + 1);
+            $this->walls($tx0, $base + 1, $tz0, $tx1, $base + $wh + 3, $tz1, 16);
+            $this->fillBox($tx0, $base + $wh + 3, $tz0, $tx1, $base + $wh + 3, $tz1, 22); // chiseled cap
+        }
+        // gate: 3-wide, 3-high opening in the front (-z) wall
+        $gx = $x0 + 5;
+        $this->fillBox($gx - 1, $base + 1, $z0, $gx + 1, $base + 3, $z0, 0);
+        // interior throne room: glowstone lights, bookshelves and a throne
+        $this->setEdit($x0 + 3, $base + $wh, $z0 + 3, 11);
+        $this->setEdit($x1 - 3, $base + $wh, $z1 - 3, 11);
+        $this->fillBox($x0 + 1, $base + 1, $z1 - 1, $x0 + 3, $base + 2, $z1 - 1, 19); // bookshelves
+        $this->fillBox($x1 - 1, $base + 1, $z1 - 3, $x1 - 1, $base + 2, $z1 - 1, 19);
+        $this->setEdit($x0 + 5, $base + 1, $z1 - 2, 22);            // throne base
+        $this->setEdit($x0 + 5, $base + 2, $z1 - 2, 20);            // throne seat (red)
+    }
+
+    /** Slim stone watchtower with a glowstone beacon on top. */
+    private function buildTower(int $cx, int $base, int $cz): void
+    {
+        $h = 10;
+        $this->walls($cx - 1, $base + 1, $cz - 1, $cx + 1, $base + $h, $cz + 1, 16);
+        $this->fillBox($cx - 1, $base, $cz - 1, $cx + 1, $base, $cz + 1, 15);        // base
+        // door
+        $this->setEdit($cx, $base + 1, $cz - 1, 0); $this->setEdit($cx, $base + 2, $cz - 1, 0);
+        // battlement cap + beacon
+        for ($x = $cx - 1; $x <= $cx + 1; $x++) {
+            for ($z = $cz - 1; $z <= $cz + 1; $z++) {
+                if ((($x + $z) & 1) === 0) { $this->setEdit($x, $base + $h + 1, $z, 22); }
+            }
+        }
+        $this->setEdit($cx, $base + $h, $cz, 11); // glowstone beacon inside the top
+    }
+
+    /** Minimum spacing (blocks) between tree trunks so canopies never overlap. */
+    private const TREE_DIST = 4;
+
+    /**
+     * Is (x,z) a tree candidate? Returns >=0 (its priority) if a trunk may grow here,
+     * or -1 otherwise. Pure function of position so neighbouring chunks agree.
+     */
+    private function treeStrength(int $x, int $z): float
+    {
+        // keep the spawn plaza (and its buildings) clear of trees
+        if (abs($x - $this->cellOf($this->originX)) <= 17
+            && abs($z - $this->cellOf($this->originZ)) <= 17) { return -1.0; }
+        $h = $this->heightAt($x, $z);
+        if ($h <= self::SEA || $h >= self::SNOW) { return -1.0; }
+        $b = $this->biomeVal($x, $z);
+        if ($b < 0.30)      { return -1.0; }     // desert: no trees
+        elseif ($b < 0.55)  { $prob = 0.012; }   // plains: sparse
+        elseif ($b < 0.72)  { $prob = 0.06;  }   // forest: dense
+        else                { $prob = 0.008; }   // mountains: rare
+        if ($this->hash3($x, 7, $z) >= $prob * (float) $this->settings['trees']) { return -1.0; }
+        return $this->hash3($x, 13, $z);          // independent priority for spacing
     }
 
     /** Deterministically populate a chunk's trees into the edit overlay (once). */
     private function genTrees(int $cx, int $cz): void
     {
         $this->trackSpill = true; $this->treeSpill = [];
-        $density = (float) $this->settings['trees'];
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
+        $D = self::TREE_DIST;
         for ($x = $x0; $x < $x0 + self::CH; $x++) {
             for ($z = $z0; $z < $z0 + self::CH; $z++) {
-                $h = $this->heightAt($x, $z);
-                if ($h <= self::SEA || $h >= self::SNOW) { continue; }
-                $b = $this->biomeVal($x, $z);
-                if ($b < 0.30)      { continue; }        // desert: no trees
-                elseif ($b < 0.55)  { $prob = 0.012; }   // plains: sparse
-                elseif ($b < 0.72)  { $prob = 0.06;  }   // forest: dense
-                else                { $prob = 0.008; }   // mountains: rare
-                if ($this->hash3($x, 7, $z) < $prob * $density) {
-                    $this->plantTreeData($x, $h + 1, $z);
+                $pri = $this->treeStrength($x, $z);
+                if ($pri < 0.0) { continue; }
+                // Poisson-disk spacing: only plant if this is the strongest candidate in
+                // a TREE_DIST radius, so no two trunks land close enough to overlap.
+                $win = true;
+                for ($nx = $x - $D; $nx <= $x + $D && $win; $nx++) {
+                    for ($nz = $z - $D; $nz <= $z + $D; $nz++) {
+                        if ($nx === $x && $nz === $z) { continue; }
+                        if ($this->treeStrength($nx, $nz) > $pri) { $win = false; break; }
+                    }
                 }
+                if ($win) { $this->plantTreeData($x, $this->heightAt($x, $z) + 1, $z); }
             }
         }
         $this->trackSpill = false;
@@ -1925,8 +2084,8 @@ final class MinecraftController extends Controller
             $this->streamMobs();
             $this->updateMobs();
 
-            // block selection: number keys 1-9 + mouse wheel
-            for ($n = 1; $n <= count(self::HOTBAR); $n++) {
+            // block selection: number keys 1-9 (first nine) + mouse wheel (all)
+            for ($n = 1; $n <= min(9, count(self::HOTBAR)); $n++) {
                 if ($e->xKeyHit(Constants::KEY_1 + ($n - 1))) { $this->slot = $n - 1; $this->refreshHand($e); }
             }
             $wheel = $e->xMouseZSpeed();
