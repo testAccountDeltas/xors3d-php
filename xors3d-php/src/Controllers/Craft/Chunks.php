@@ -186,16 +186,18 @@ trait Chunks
                             0.55 + 0.15 * (($ac >> 4) & 3),
                             0.55 + 0.15 * (($ac >> 6) & 3),
                         ];
-                        // Shader mode: RGB carries skylight only, ALPHA carries torch emission
-                        // (the shader adds it back independent of day/night). Fallback mode:
-                        // fold the torch glow into RGB (fixed-function has no emissive term).
-                        if ($this->blockShade) { $base = $lc; $alpha = $ec / 255.0; }
-                        else                    { $base = max($lc, $ec); $alpha = 1.0; }
+                        // Shader mode: RGB carries skylight only, torch emission goes in a
+                        // second uv set (NOT vertex alpha - the chunk mesh's alpha would make
+                        // the block see-through). Fallback mode: fold torch glow into RGB.
+                        $shade = $this->blockShade;
+                        $base = $shade ? $lc : max($lc, $ec);
+                        $emitF = $ec / 255.0;
                         $verts = [$a0, $a1, $a2, $a3];
                         foreach ($verts as $ci => $vi) {
                             $cv = (int) min(255.0, $base * $dir * $aoF[$ci]);
                             $e->xVertexNormal($s, $vi, $nrm[0], $nrm[1], $nrm[2]);
-                            $e->xVertexColor($s, $vi, $cv, $cv, $cv, $alpha);
+                            $e->xVertexColor($s, $vi, $cv, $cv, $cv);
+                            if ($shade) { $e->xVertexTexCoords($s, $vi, $emitF, 0.0, 1.0, 1); } // emit in uv set 1
                         }
                         // both windings so the face is never culled from the outside,
                         // regardless of per-axis chirality (backface culling keeps one)

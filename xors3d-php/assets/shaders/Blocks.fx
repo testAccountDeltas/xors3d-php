@@ -34,26 +34,29 @@ sampler S = sampler_state {
 };
 
 struct VIn {
-    float4 Pos : POSITION0;
-    float3 Nrm : NORMAL;
-    float2 UV  : TEXCOORD0;
-    float4 Col : COLOR0;
+    float4 Pos  : POSITION0;
+    float3 Nrm  : NORMAL;
+    float2 UV   : TEXCOORD0;
+    float2 Emit : TEXCOORD1;   // second uv set: x = torch emissive amount (0..1)
+    float4 Col  : COLOR0;
 };
 struct VOut {
-    float4 Pos : POSITION0;
-    float2 UV  : TEXCOORD0;
-    float3 Nrm : TEXCOORD1;
-    float  Fog : TEXCOORD2;
-    float4 Col : COLOR0;
+    float4 Pos  : POSITION0;
+    float2 UV   : TEXCOORD0;
+    float3 Nrm  : TEXCOORD1;
+    float  Fog  : TEXCOORD2;
+    float  Emit : TEXCOORD3;
+    float4 Col  : COLOR0;
 };
 
 VOut VS(VIn IN) {
     VOut O;
-    O.Pos = mul(IN.Pos, MatWorldViewProj);
-    O.UV  = IN.UV;
-    O.Nrm = normalize(mul(IN.Nrm, (float3x3) MatWorld));
-    O.Fog = O.Pos.w;              // view-space depth
-    O.Col = IN.Col;
+    O.Pos  = mul(IN.Pos, MatWorldViewProj);
+    O.UV   = IN.UV;
+    O.Nrm  = normalize(mul(IN.Nrm, (float3x3) MatWorld));
+    O.Fog  = O.Pos.w;              // view-space depth
+    O.Emit = IN.Emit.x;
+    O.Col  = IN.Col;
     return O;
 }
 
@@ -69,9 +72,9 @@ float4 PS(VOut IN) : COLOR {
     float3 light = amb + SunClr * d;
 
     float3 col = t.rgb * IN.Col.rgb * light;  // baked AO/skylight * soft day/night light
-    // torch/glowstone emission (vertex alpha): warm light added on top, independent of
+    // torch/glowstone emission (second uv set): warm light added on top, independent of
     // time of day so building lights stay lit at night.
-    col += t.rgb * IN.Col.a * float3(1.0, 0.80, 0.48) * 1.35;
+    col += t.rgb * saturate(IN.Emit) * float3(1.0, 0.80, 0.48) * 1.35;
 
     float f = saturate((IN.Fog - FogRange.x) / (FogRange.y - FogRange.x));
     col = lerp(col, FogClr, f);
