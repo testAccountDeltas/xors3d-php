@@ -137,6 +137,8 @@ final class MinecraftController extends Controller
     /** @var array<string,int> "x,y,z" => type (0 = removed): tree + player edits over generated world */ private array $edits = [];
     /** @var array<string,array<string,int>> chunk key => its edits */ private array $editsByChunk = [];
     /** @var array<string,bool> chunks whose trees have been generated */ private array $treeGen = [];
+    /** @var array<string,bool> chunk keys touched by the tree gen currently running */ private array $treeSpill = [];
+    private bool $trackSpill = false;
     /** @var array<int,int> block type => brush (textured) for chunk meshes */ private array $brush = [];
     /** @var array<string,int> chunk key => merged mesh handle */ private array $chunkMesh = [];
     /** @var array<int,string> mesh handle => chunk key (for picking) */ private array $meshCk = [];
@@ -560,6 +562,7 @@ final class MinecraftController extends Controller
     /** Deterministically populate a chunk's trees into the edit overlay (once). */
     private function genTrees(int $cx, int $cz): void
     {
+        $this->trackSpill = true; $this->treeSpill = [];
         $density = (float) $this->settings['trees'];
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
         for ($x = $x0; $x < $x0 + self::CH; $x++) {
@@ -576,6 +579,7 @@ final class MinecraftController extends Controller
                 }
             }
         }
+        $this->trackSpill = false;
     }
 
     // ------------------------------------------------------------- value noise
@@ -888,6 +892,7 @@ final class MinecraftController extends Controller
         $this->edits[$k] = $type;
         $ck = $this->cdiv($x) . "," . $this->cdiv($z);
         $this->editsByChunk[$ck][$k] = $type;
+        if ($this->trackSpill) { $this->treeSpill[$ck] = true; }
     }
 
     /** Bake a tree into the edit overlay (streamed in with its chunk). */
@@ -1034,7 +1039,15 @@ final class MinecraftController extends Controller
         }
         $this->chunk[$ck] = [];
 
-        if (!isset($this->treeGen[$ck])) { $this->treeGen[$ck] = true; $this->genTrees($cx, $cz); }
+        $spill = [];
+        if (!isset($this->treeGen[$ck])) {
+            $this->treeGen[$ck] = true;
+            $this->genTrees($cx, $cz);
+            // trees near a chunk edge spill leaf blocks into neighbour chunks; capture
+            // which already-loaded neighbours must be rebuilt so those leaves aren't
+            // missing (see-through canopies on the border-facing side).
+            $spill = $this->treeSpill;
+        }
 
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
         $yMax = 0;
@@ -1064,6 +1077,13 @@ final class MinecraftController extends Controller
         $this->chunkMesh[$ck] = $mesh;
         $this->meshCk[$mesh] = $ck;
         $this->chunk[$ck] = array_merge([$mesh], $list);
+
+        // rebuild already-loaded neighbours that received spilled tree blocks
+        foreach (array_keys($spill) as $nk) {
+            if ($nk === $ck || !isset($this->loaded[$nk]) || !isset($this->chunkMesh[$nk])) { continue; }
+            [$ncx, $ncz] = array_map('intval', explode(',', $nk));
+            $this->buildChunkMesh($ncx, $ncz); // treeGen already set -> no re-gen, no recursion
+        }
     }
 
     private function loadChunk(int $cx, int $cz): void
