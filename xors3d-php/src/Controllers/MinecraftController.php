@@ -714,11 +714,14 @@ final class MinecraftController extends Controller
                 $this->scale = $w > 0.0 ? self::BLOCK / $w : 1.0;
             }
             $e->xScaleEntity($cube, $this->scale, $this->scale, $this->scale);
-            $texture = $e->xLoadTexture($base . $file);
+            // glass loads as a MASKED texture: fully-transparent texels are discarded so
+            // you see straight through the pane, the frame stays solid (crisp windows).
+            $texture = ($id === 10)
+                ? $e->xLoadTexture($base . $file, 1 + 4 + 8)   // color + masked + mipmap
+                : $e->xLoadTexture($base . $file);
             $this->tex[$id] = $texture;
             $e->xEntityTexture($cube, $texture);
             if ($id === 11) { $e->xEntityFX($cube, 1); } // glowstone: fullbright
-            if ($id === 10) { $e->xEntityAlpha($cube, 0.7); } // glass: translucent
             $e->xHideEntity($cube);
             $this->template[$id] = $cube;
 
@@ -817,55 +820,75 @@ final class MinecraftController extends Controller
         }
     }
 
-    /** Build the flat plaza and the three showcase buildings around spawn (0,0). */
+    /** Radius (blocks) around spawn kept clear of trees for the plaza + buildings. */
+    private const PLAZA_R = 48;
+
+    /** Load a converted blueprint (assets/structures/<name>.json), cached. */
+    private function loadStruct(string $name): ?array
+    {
+        static $cache = [];
+        if (array_key_exists($name, $cache)) { return $cache[$name]; }
+        $f = dirname(__DIR__, 2) . '/assets/structures/' . $name . '.json';
+        $d = is_file($f) ? json_decode((string) file_get_contents($f), true) : null;
+        return $cache[$name] = (is_array($d) ? $d : null);
+    }
+
+    /** Level a flat grass pad and stamp a converted blueprint with its min-corner at (ox,base,oz). */
+    private function placeStruct(string $name, int $ox, int $base, int $oz): void
+    {
+        $s = $this->loadStruct($name);
+        if ($s === null) { return; }
+        $w = (int) $s['w']; $d = (int) $s['d'];
+        // level a pad (footprint + 1 border): dirt/grass floor, hills above cut away
+        for ($x = $ox - 1; $x <= $ox + $w; $x++) {
+            for ($z = $oz - 1; $z <= $oz + $d; $z++) {
+                $this->setEdit($x, $base - 1, $z, 2);
+                $this->setEdit($x, $base, $z, 1);
+                for ($y = $base + 1; $y <= $base + 12; $y++) { $this->setEdit($x, $y, $z, 0); }
+            }
+        }
+        foreach ($s['blocks'] as [$dx, $dy, $dz, $t]) {
+            $this->setEdit($ox + (int) $dx, $base + 1 + (int) $dy, $oz + (int) $dz, (int) $t);
+        }
+    }
+
+    /** A glowstone lamp on a short post (a "torch" light for the plaza). */
+    private function lampPost(int $x, int $base, int $z): void
+    {
+        $this->setEdit($x, $base + 1, $z, 8);   // log post
+        $this->setEdit($x, $base + 2, $z, 8);
+        $this->setEdit($x, $base + 3, $z, 11);  // glowstone lamp on top
+    }
+
+    /** Build the spawn plaza with imported blueprint buildings + a castle, tower and lamps. */
     private function buildStructures(): void
     {
         $ox = $this->cellOf($this->originX);
         $oz = $this->cellOf($this->originZ);
         $base = max(self::SEA + 2, $this->heightAt($ox, $oz));
 
-        // level a flat grass plaza so buildings sit evenly and the player lands clear
-        $pr = 15;
-        for ($x = $ox - $pr; $x <= $ox + $pr; $x++) {
-            for ($z = $oz - $pr; $z <= $oz + $pr; $z++) {
-                $this->setEdit($x, $base - 1, $z, 2);           // dirt sub-surface
-                $this->setEdit($x, $base, $z, 1);               // grass top
-                for ($y = $base + 1; $y <= $base + 9; $y++) { $this->setEdit($x, $y, $z, 0); } // cut hills
+        // small clear pad where the player lands
+        for ($x = $ox - 3; $x <= $ox + 3; $x++) {
+            for ($z = $oz - 3; $z <= $oz + 3; $z++) {
+                $this->setEdit($x, $base - 1, $z, 2);
+                $this->setEdit($x, $base, $z, 1);
+                for ($y = $base + 1; $y <= $base + 12; $y++) { $this->setEdit($x, $y, $z, 0); }
             }
         }
 
-        $this->buildHouse($ox - 12, $base, $oz - 4);
-        $this->buildCastle($ox + 4, $base, $oz - 5);
-        $this->buildTower($ox - 3, $base, $oz + 9);
-    }
+        // imported Axiom blueprints (converted from Default-assets/schematics)
+        $this->placeStruct('birch_house',    $ox - 40, $base, $oz - 16);
+        $this->placeStruct('medieval_house', $ox + 12, $base, $oz - 18);
+        $this->placeStruct('temple',         $ox - 18, $base, $oz + 14);
 
-    /** Cosy wooden house: oak walls, log corners, glass windows, door, roof + interior. */
-    private function buildHouse(int $x0, int $base, int $z0): void
-    {
-        $w = 7; $d = 8; $wh = 4;
-        $x1 = $x0 + $w; $z1 = $z0 + $d;
-        $this->fillBox($x0, $base, $z0, $x1, $base, $z1, 17);          // plank floor
-        $this->walls($x0, $base + 1, $z0, $x1, $base + $wh, $z1, 17);  // plank walls
-        // log corner pillars
-        foreach ([[$x0, $z0], [$x1, $z0], [$x0, $z1], [$x1, $z1]] as [$cx, $cz]) {
-            $this->fillBox($cx, $base + 1, $cz, $cx, $base + $wh, $cz, 8);
+        // hand-built castle + watchtower
+        $this->buildCastle($ox + 12, $base, $oz + 10);
+        $this->buildTower($ox - 4, $base, $oz + 6);
+
+        // lamp posts around the central plaza for night-time light
+        foreach ([[-8, -8], [8, -8], [-8, 8], [8, 8], [0, -10], [0, 10]] as [$lx, $lz]) {
+            $this->lampPost($ox + $lx, $base, $oz + $lz);
         }
-        // glass windows on the side walls
-        $my = $base + 2;
-        foreach ([$z0 + 2, $z0 + 5] as $wz) {
-            $this->setEdit($x0, $my, $wz, 10); $this->setEdit($x1, $my, $wz, 10);
-        }
-        $this->setEdit($x0 + 3, $my, $z0, 10); $this->setEdit($x0 + 4, $my, $z1, 10);
-        // door: 2-high gap in the front (-z) wall
-        $dx = $x0 + 3;
-        $this->setEdit($dx, $base + 1, $z0, 0); $this->setEdit($dx, $base + 2, $z0, 0);
-        // dark-plank flat roof with a small overhang
-        $this->fillBox($x0 - 1, $base + $wh + 1, $z0 - 1, $x1 + 1, $base + $wh + 1, $z1 + 1, 18);
-        // interior: light, bookshelves and a bed
-        $this->setEdit($x0 + 3, $base + $wh, $z0 + 4, 11);            // glowstone lamp on ceiling
-        $this->fillBox($x1 - 1, $base + 1, $z1 - 1, $x1 - 1, $base + 2, $z1 - 1, 19); // bookshelf stack
-        $this->setEdit($x0 + 1, $base + 1, $z1 - 1, 20);             // bed (red wool)
-        $this->setEdit($x0 + 2, $base + 1, $z1 - 1, 21);             // pillow (white wool)
     }
 
     /** Stone-brick castle: walls, battlements, four corner towers, gate + throne room. */
@@ -928,8 +951,8 @@ final class MinecraftController extends Controller
     private function treeStrength(int $x, int $z): float
     {
         // keep the spawn plaza (and its buildings) clear of trees
-        if (abs($x - $this->cellOf($this->originX)) <= 17
-            && abs($z - $this->cellOf($this->originZ)) <= 17) { return -1.0; }
+        if (abs($x - $this->cellOf($this->originX)) <= self::PLAZA_R
+            && abs($z - $this->cellOf($this->originZ)) <= self::PLAZA_R) { return -1.0; }
         $h = $this->heightAt($x, $z);
         if ($h <= self::SEA || $h >= self::SNOW) { return -1.0; }
         $b = $this->biomeVal($x, $z);
@@ -1359,12 +1382,16 @@ final class MinecraftController extends Controller
                         $a = $this->solidType($off[0] + $pa[0], $off[1] + $pa[1], $off[2] + $pa[2]);
                         $pb = $pa; $pb[$d] = $xd + 1;
                         $b = $this->solidType($off[0] + $pb[0], $off[1] + $pb[1], $off[2] + $pb[2]);
-                        if (($a > 0) === ($b > 0)) { $mask[$n++] = 0; }
-                        elseif ($a > 0) {
-                            // snow lies on upward-facing ground faces (Y+ top of block a)
-                            $mask[$n++] = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a;
-                        }
-                        else            { $mask[$n++] = -$b; }
+                        // glass (10) is transparent: it never hides the block behind it, so
+                        // its neighbours still draw their faces and you can see through windows.
+                        $oa = ($a > 0 && $a !== 10);   // a is opaque
+                        $ob = ($b > 0 && $b !== 10);   // b is opaque
+                        if ($oa && $ob) { $mask[$n++] = 0; }               // both opaque: hidden
+                        elseif ($oa)    { $mask[$n++] = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a; }
+                        elseif ($ob)    { $mask[$n++] = -$b; }
+                        elseif ($a === 10 && $b !== 10) { $mask[$n++] = $a; }  // glass face toward air/glass-gap
+                        elseif ($b === 10 && $a !== 10) { $mask[$n++] = -$b; }
+                        else            { $mask[$n++] = 0; }               // air|air or glass|glass
                     }
                 }
                 // greedy-merge the mask into quads
