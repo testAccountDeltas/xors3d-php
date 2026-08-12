@@ -121,6 +121,7 @@ final class MinecraftController extends Controller
     private int $mobTimer = 0;
     private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
     private int $lastMs = 0;
+    private float $acc = 0.0;   // fixed-timestep accumulator (in 60 FPS-frame units)
 
     /** @var array<int,int> */ private array $template = [];
     /** @var array<int,int> */ private array $tex = [];
@@ -1545,21 +1546,35 @@ final class MinecraftController extends Controller
             if ($this->closeRequested()) { $this->quit = true; return; }
             if ($max === 0 && $e->xKeyHit(Constants::KEY_ESCAPE)) { return; }
 
-            // frame-time factor so movement/physics are FPS-independent (1.0 == 60 FPS).
-            // No lower clamp: at high FPS dt must be small; only cap large hitches.
-            // xMillisecs() is a SIGNED 32-bit ms counter and goes negative after
-            // ~24.8 days of uptime, so never test it with "> 0"; use a sentinel for
-            // the first frame and treat a negative/huge delta (wrap or hitch) as one frame.
+            // Frame time in "60 FPS-frame" units. xMillisecs() is a SIGNED 32-bit ms
+            // counter and goes negative after ~24.8 days of uptime, so never test it with
+            // "> 0"; use a sentinel for the first frame and treat a negative/huge delta
+            // (wrap or hitch) as one frame.
             $now = $e->xMillisecs();
             $frameMs = ($this->lastMs === PHP_INT_MIN) ? 16 : ($now - $this->lastMs);
             $this->lastMs = $now;
             if ($frameMs < 0 || $frameMs > 250) { $frameMs = 16; }
-            $this->dt = min(3.0, $frameMs / 16.6667);
+            $frameDt = min(3.0, $frameMs / 16.6667);
 
             if ($e->xKeyHit(Constants::KEY_F)) { $this->fly = !$this->fly; $this->vy = 0.0; }
 
             $this->cam->lookOnly();
-            $this->move();
+
+            // Fixed-timestep physics: run movement/collision/gravity in constant 1/60 s
+            // steps regardless of render FPS. This keeps speed AND collision behaviour
+            // identical at 60 or 440+ FPS (collision look-ahead no longer scales with the
+            // frame's step size). Leftover time carries to the next frame; capped to avoid
+            // a spiral of death after a big hitch.
+            $this->acc += $frameDt;
+            $this->dt = 1.0;
+            $steps = 0;
+            while ($this->acc >= 1.0 && $steps < 5) {
+                $this->move();
+                $this->acc -= 1.0;
+                $steps++;
+            }
+            $this->dt = $frameDt; // restore real frame dt for per-frame visuals below
+
             $this->updateStreaming($this->px, $this->pz);
             $this->animateWater();
             $this->streamMobs();
