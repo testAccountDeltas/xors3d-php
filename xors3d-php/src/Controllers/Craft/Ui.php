@@ -78,6 +78,14 @@ trait Ui
         if ($this->ambCh !== 0) {
             $this->e->xChannelVolume($this->ambCh, (float) $this->settings['volume'] * 0.6);
         }
+        // block shader on/off changes both the mesh effect and the baked shading, so
+        // rebuild loaded chunks (and drop the cache) when it toggles.
+        $prevShade = $this->blockShade;
+        $this->refreshBlockShade();
+        if ($this->blockShade !== $prevShade && $this->chunkMesh !== []) {
+            $this->clearChunkCache();
+            $this->remeshLoaded();
+        }
         $this->applyRenderDist();
     }
 
@@ -227,6 +235,7 @@ trait Ui
         $e->xPointEntity($this->camH, $this->pivot);
         $this->updateSky();
         $this->updateSkyObjects();
+        $this->updateBlockFX();
         $this->animateWater();
         $this->streamMobs();
         $this->updateMobs();

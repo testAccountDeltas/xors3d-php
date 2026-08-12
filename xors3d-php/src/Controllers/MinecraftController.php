@@ -6,6 +6,7 @@ namespace Xors3D\Controllers;
 
 use Xors3D\Controllers\Craft\Assets;
 use Xors3D\Controllers\Craft\Bed;
+use Xors3D\Controllers\Craft\BlockShader;
 use Xors3D\Controllers\Craft\Chunks;
 use Xors3D\Controllers\Craft\Effects;
 use Xors3D\Controllers\Craft\Furnace;
@@ -62,6 +63,7 @@ final class MinecraftController extends Controller
     use Bed;        // sleep (B) at night near a bed to skip to morning (src/Controllers/Craft/)
     use Furnace;    // smelting menu (sand->glass etc) with fuel (src/Controllers/Craft/)
     use Minimap;    // top-right surface minimap (src/Controllers/Craft/)
+    use BlockShader; // per-pixel soft block lighting shader (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -165,7 +167,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 48,
-        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 0, 'aoshade' => 1,
+        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 0, 'aoshade' => 1, 'blockfx' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -179,6 +181,7 @@ final class MinecraftController extends Controller
         ['key' => 'survival',    'label' => 'Survival (health)',  'type' => 'bool'],
         ['key' => 'minimap',     'label' => 'Minimap',           'type' => 'bool'],
         ['key' => 'aoshade',     'label' => 'Block shading (AO)', 'type' => 'bool'],
+        ['key' => 'blockfx',     'label' => 'Block shader (soft light)', 'type' => 'bool'],
         ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
         ['key' => 'godrays',     'label' => 'Sun rays (shader)', 'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
@@ -307,6 +310,14 @@ final class MinecraftController extends Controller
     private int $bloomFX = 0;
     private bool $bloomOK = false;
 
+    // per-pixel block shader
+    private int $blockFX = 0;
+    private bool $blockOK = false;   // GPU can run the technique
+    private bool $blockShade = false; // shader is on (supported + enabled)
+    private int $bfxMs = 0;          // throttle for constant refresh
+    /** @var array<string,mixed> cached block-shader lighting constants */
+    private array $bfx = [];
+
     // god-rays post-effect (shader)
     private int $godPoly = 0;
     private int $godTex = 0;
@@ -373,6 +384,7 @@ final class MinecraftController extends Controller
         $this->loadSounds($e);
         $this->setupBloom($e);
         $this->setupGodRays($e);
+        $this->setupBlockFX($e);
         $this->applySettings();
         $this->rebuildWorld();
 
@@ -510,6 +522,7 @@ final class MinecraftController extends Controller
             $e->xTurnEntity($this->hand, 0, 1.5 * $this->dt, 0);
             $this->updateSky();
             $this->updateSkyObjects();
+            $this->updateBlockFX();
             $this->updateWeather();
             $this->updatePuddles();
             $this->updateParticles();

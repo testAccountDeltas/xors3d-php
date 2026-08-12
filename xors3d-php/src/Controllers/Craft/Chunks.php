@@ -168,7 +168,10 @@ trait Chunks
                         $nrm = [0.0, 0.0, 0.0]; $nrm[$d] = ($c > 0) ? 1.0 : -1.0;
                         // Directional face shading (top brightest, sides dimmer, bottom darkest):
                         // this is what makes plain cubes read as 3D under vertex-colour lighting.
-                        if ($d === 1)      { $dir = ($c > 0) ? 1.0 : 0.5; } // +Y top / -Y bottom
+                        // With the per-pixel block shader on, the shader does smooth directional
+                        // lighting instead, so we bake a flat 1.0 here (AO/skylight/torch stay).
+                        if ($this->blockShade) { $dir = 1.0; }
+                        elseif ($d === 1)  { $dir = ($c > 0) ? 1.0 : 0.5; } // +Y top / -Y bottom
                         elseif ($d === 2)  { $dir = 0.8; }                  // Z sides
                         else               { $dir = 0.62; }                 // X sides
                         // per-corner colour = baked skylight * face direction * ambient occlusion
@@ -301,7 +304,11 @@ trait Chunks
         $this->bakeBlockLite($x0, $z0);            // glowstone glow baked into vertex colours
         $mesh = $e->xCreateMesh();
         $this->greedyMesh($mesh, $x0, $z0, $yMax); // sets its own vertex normals + double winding
-        $e->xEntityFX($mesh, Constants::FX_VERTEXCOLOR); // use baked skylight vertex colours
+        if ($this->blockShade) {
+            $this->attachBlockFX($mesh);                 // per-pixel soft lighting shader
+        } else {
+            $e->xEntityFX($mesh, Constants::FX_VERTEXCOLOR); // fallback: baked vertex colours
+        }
         $e->xEntityPickMode($mesh, 2);
 
         $list = [];
@@ -330,6 +337,8 @@ trait Chunks
             foreach ($this->chunkCache[$ck] as $h) { $e->xShowEntity($h); }
             unset($this->chunkCache[$ck]);
             $this->loaded[$ck] = true;
+            // refresh shader lighting on the revealed mesh (its constants went stale while hidden)
+            if ($this->blockShade && isset($this->chunkMesh[$ck])) { $this->applyBlockFXConsts($this->chunkMesh[$ck]); }
             return;
         }
         $this->loaded[$ck] = true;
