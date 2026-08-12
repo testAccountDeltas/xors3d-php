@@ -5,3 +5,5 @@ xors3d-php/craft-world.json
 # junk
 Thumbs.db
 *.log
+
+craft-crash.log
