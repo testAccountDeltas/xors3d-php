@@ -151,6 +151,10 @@ run.bat info          :: информация о движке (без окна)
       ├─ Ffi/                 NativeLibrary + ГЕНЕРИРУЕМЫЕ Engine.php / Constants.php
       ├─ Scene/               Entity, Camera, Cube, Texture, MouseLookCamera, Skybox…
       └─ Controllers/         По контроллеру на демку (32 примера + info + minecraft)
+         └─ Craft/            Логика игры «Craft», разнесённая по трейтам:
+                              TerrainGen, Mobs, Weather, Inventory, Chunks,
+                              Structures, Sky, Player, Effects, Ui, Assets, World
+                              (MinecraftController ~500 строк — только каркас + gameLoop)
 ```
 
 ## Как это работает
