@@ -61,7 +61,10 @@ trait Structures
             $w = (int) $s['w']; $d = (int) $s['d'];
             for ($x = $ox - 1; $x <= $ox + $w; $x++) {
                 for ($z = $oz - 1; $z <= $oz + $d; $z++) {
-                    $this->setEdit($x, $base - 1, $z, 2);
+                    // fill dirt from the natural ground up to the pad so the levelled edge
+                    // never floats over a dip (no grass lip hanging in the air on slopes)
+                    $g = $this->heightAt($x, $z);
+                    for ($y = min($g, $base - 1); $y < $base; $y++) { $this->setEdit($x, $y, $z, 2); }
                     $this->setEdit($x, $base, $z, 1);
                     for ($y = $base + 1; $y <= $base + 12; $y++) { $this->setEdit($x, $y, $z, 0); }
                 }

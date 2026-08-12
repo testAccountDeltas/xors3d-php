@@ -448,6 +448,10 @@ final class MinecraftController extends Controller
     {
         $e = $this->e; $h = $this->camH; $frame = 0;
         $this->lastMs = PHP_INT_MIN;
+        // Cinematic capture mode (for README media): drive the camera on a scripted orbit
+        // over the village, hide the HUD, and optionally save a clean frame sequence for a GIF.
+        $cine = (bool) getenv('CRAFT_CINE');
+        $seq  = getenv('CRAFT_SHOTSEQ') ?: '';
 
         while (true) {
             if ($this->closeRequested()) { $this->quit = true; return; }
@@ -475,15 +479,17 @@ final class MinecraftController extends Controller
             $this->acc += $frameDt;
             $this->dt = 1.0;
             $steps = 0;
-            while ($this->acc >= 1.0 && $steps < 5) {
+            while (!$cine && $this->acc >= 1.0 && $steps < 5) {
                 $this->move();
                 $this->acc -= 1.0;
                 $steps++;
             }
+            if ($cine) { $this->acc = 0.0; $this->cineCamera($frame, $max); }
             $this->dt = $frameDt; // restore real frame dt for per-frame visuals below
 
             $this->updateStreaming($this->px, $this->pz);
-            $this->processStreaming(2, 2); // budgeted (count + time): a few chunks/frame, no hitches
+            if ($cine) { $this->flushStreaming(); } // fully build each frame -> no pop-in in the capture
+            else { $this->processStreaming(2, 2); } // budgeted (count + time): a few chunks/frame, no hitches
             $this->animateWater();
             $this->streamMobs();
             $this->updateMobs();
@@ -550,13 +556,16 @@ final class MinecraftController extends Controller
             $e->xRenderWorld();
             $this->renderGodRays();
             $this->renderBloom();
-            $this->drawHud($e, $hasTarget);
-            $this->drawVitals($e);
-            $this->drawMinimap($e);
+            if (!$cine) {                         // clean, HUD-less frames for cinematic capture
+                $this->drawHud($e, $hasTarget);
+                $this->drawVitals($e);
+                $this->drawMinimap($e);
+            }
 
             if ($max > 0 && $frame + 1 >= $max && ($shot = getenv('CRAFT_SHOT'))) {
                 $e->xSaveBuffer($e->xBackBuffer(), $shot);
             }
+            if ($seq !== '') { $e->xSaveBuffer($e->xBackBuffer(), sprintf('%s_%03d.bmp', $seq, $frame)); }
             $e->xFlip();
             if ($max > 0 && ++$frame >= $max) { return; }
         }

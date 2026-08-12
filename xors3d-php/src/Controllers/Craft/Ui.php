@@ -14,6 +14,42 @@ use Xors3D\Ffi\Engine;
  */
 trait Ui
 {
+    /**
+     * Cinematic camera for README media (CRAFT_CINE): a slow orbit around the spawn village
+     * that rises over $max frames, always looking in at the plaza + castle + floating island.
+     * Also drives px/pz so chunks stream around the camera. No player physics/HUD in this mode.
+     */
+    private function cineCamera(int $frame, int $max): void
+    {
+        $e = $this->e; $B = self::BLOCK;
+        $span = max(1, $max);
+        $t = $frame / $span;                                   // 0..1 progress
+
+        $gx = $this->cellOf($this->originX); $gz = $this->cellOf($this->originZ);
+        $ground = $this->heightAt($gx, $gz);
+        $cx = $this->originX; $cz = $this->originZ;             // orbit centre (world units)
+
+        $ang = $t * 2.0 * M_PI * 0.85;                         // ~0.85 turn over the clip
+        $radius = (46.0 - 8.0 * $t) * $B;                      // spiral gently inward
+        $height = ($ground + 13.0 + 9.0 * $t) * $B;            // a gentle rise over the village
+
+        $camx = $cx + cos($ang) * $radius;
+        $camz = $cz + sin($ang) * $radius;
+        $camy = $height;
+
+        // look slightly down at the plaza; the floating island stays high in the upper frame
+        $tx = $cx; $tz = $cz; $ty = ($ground + 7.0) * $B;
+        $dx = $tx - $camx; $dy = $ty - $camy; $dz = $tz - $camz;
+        $horiz = sqrt($dx * $dx + $dz * $dz);
+        $yaw = atan2($dx, $dz) * 180.0 / M_PI;
+        $pitch = -atan2($dy, $horiz) * 180.0 / M_PI;
+
+        $e->xPositionEntity($this->camH, $camx, $camy, $camz);
+        $e->xRotateEntity($this->camH, $pitch, $yaw, 0);
+        $this->px = $camx; $this->py = $camy; $this->pz = $camz; // stream around the camera
+        $e->xHideEntity($this->hand); // no first-person held block in cinematic shots
+    }
+
     private function settingsFile(): string { return dirname(__DIR__, 3) . '/craft-settings.json'; }
 
     private function loadSettings(): void

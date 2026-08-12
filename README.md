@@ -19,9 +19,11 @@
 
 Игра «Craft» (маршрут `minecraft`):
 
-![Главное меню](docs/screenshots/menu.png)
+![Облёт деревни спавна](docs/screenshots/flythrough.gif)
 
 ![Игровой процесс](docs/screenshots/gameplay.png)
+
+![Главное меню](docs/screenshots/menu.png)
 
 ![Меню настроек](docs/screenshots/settings.png)
 
