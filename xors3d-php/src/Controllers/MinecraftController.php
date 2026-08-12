@@ -30,8 +30,8 @@ final class MinecraftController extends Controller
 {
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
-    private const MAX_H = 16;
-    private const SNOW  = 12;
+    private const MAX_H = 22;
+    private const SNOW  = 16;
     private const SEA   = 4;
     private const Y_MAX = 48;
     private const BLOCK = 2.0;
@@ -75,7 +75,7 @@ final class MinecraftController extends Controller
     private array $settings = [
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
-        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 32,
+        'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 48,
         'bloom' => 0, 'godrays' => 1, 'weather' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
@@ -168,6 +168,9 @@ final class MinecraftController extends Controller
     private float $wetness = 0.0;   // 0..1 eased overcast amount for sky darkening
     private bool $snowOn = false;   // snow is lying on the ground (top faces rendered white)
     private float $snowBuild = 0.0; // frames of snow before it covers the ground
+    private int $puddleTpl = 0;     // thin water-slab template for rain puddles
+    /** @var array<int,array<string,int|float>> puddle pool: [ent, x, z, placed] */
+    private array $puddles = [];
     /** @var array<int,int> hotbar type id => 2D icon image handle */
     private array $icon = [];
     /** @var array<string,int> mob part textures */
@@ -389,6 +392,20 @@ final class MinecraftController extends Controller
             $e->xHideEntity($sp);
             $this->drops[] = ['sp' => $sp, 'x' => 0.0, 'y' => 0.0, 'z' => 0.0, 'vy' => 0.0, 'sway' => 0.0];
         }
+
+        // rain puddles: thin, near-flat water slabs that collect on flat ground
+        $this->puddleTpl = $e->xCreateCube();
+        $e->xScaleEntity($this->puddleTpl, $this->scale * 0.5, $this->scale * 0.04, $this->scale * 0.5);
+        $e->xEntityColor($this->puddleTpl, 90, 130, 200);
+        $e->xEntityAlpha($this->puddleTpl, 0.0);
+        $e->xEntityTexture($this->puddleTpl, $this->waterTex);
+        $e->xHideEntity($this->puddleTpl);
+        for ($i = 0; $i < 48; $i++) {
+            $pd = $e->xCopyEntity($this->puddleTpl);
+            $e->xHideEntity($pd);
+            $this->puddles[] = ['ent' => $pd, 'x' => 0.0, 'z' => 0.0, 'placed' => 0];
+        }
+
         $this->weatherTimer = 600.0; // first roll after ~10 s
     }
 
@@ -459,6 +476,51 @@ final class MinecraftController extends Controller
                 $p['sway'] = mt_rand(0, 100) / 100.0;
             }
             $e->xPositionEntity($p['sp'], $p['x'], $p['y'], $p['z']);
+        }
+        unset($p);
+    }
+
+    /**
+     * Rain puddles: keep a pool of thin water slabs on flat exposed ground around the
+     * player, fading their alpha with how wet it is. Water only collects while raining.
+     */
+    private function updatePuddles(): void
+    {
+        $e = $this->e; $B = self::BLOCK;
+        $raining = ($this->weather === 1) && (int) ($this->settings['weather'] ?? 1);
+        $alpha = $raining ? min(0.5, $this->wetness * 0.9) : 0.0;
+
+        if (!$raining) {
+            foreach ($this->puddles as &$p) {
+                if ($p['placed']) { $e->xHideEntity($p['ent']); $p['placed'] = 0; }
+            }
+            unset($p);
+            return;
+        }
+
+        $radius = 22.0 * $B;
+        foreach ($this->puddles as &$p) {
+            if (!$p['placed']
+                || abs($p['x'] - $this->px) > $radius || abs($p['z'] - $this->pz) > $radius) {
+                for ($t = 0; $t < 6; $t++) {
+                    $bx = $this->cellOf($this->px + (mt_rand(-1000, 1000) / 1000.0) * $radius);
+                    $bz = $this->cellOf($this->pz + (mt_rand(-1000, 1000) / 1000.0) * $radius);
+                    if ($this->heightAt($bx, $bz) < self::SEA) { continue; } // not in the sea
+                    $top = $this->groundTop($bx, $bz);
+                    // settle on a roughly-flat patch (allow one differing neighbour)
+                    $flat = 0;
+                    $flat += (int) ($this->groundTop($bx + 1, $bz) === $top);
+                    $flat += (int) ($this->groundTop($bx - 1, $bz) === $top);
+                    $flat += (int) ($this->groundTop($bx, $bz + 1) === $top);
+                    $flat += (int) ($this->groundTop($bx, $bz - 1) === $top);
+                    if ($flat < 3) { continue; }
+                    $p['x'] = $bx * $B; $p['z'] = $bz * $B; $p['placed'] = 1;
+                    $e->xPositionEntity($p['ent'], $p['x'], $top * $B + $B * 0.5 + 0.04, $p['z']);
+                    $e->xShowEntity($p['ent']);
+                    break;
+                }
+            }
+            if ($p['placed']) { $e->xEntityAlpha($p['ent'], $alpha); }
         }
         unset($p);
     }
@@ -1001,9 +1063,12 @@ final class MinecraftController extends Controller
         $b = $this->biomeVal($x, $z);
         $mount = max(0.0, ($b - 0.72) / 0.28);      // 0 in lowlands, 1 in mountains
         $mount = $mount * $mount;
-        $amp = 2.0 + $mount * 16.0;                  // plains ~±1, mountains tall
-        $detail = $this->fbm($x * 0.05, $z * 0.05) / 0.9375; // 0..1 local relief
-        $h = (int) round((self::SEA + 2) + ($detail - 0.5) * $amp);
+        // wide, gentle rolling hills everywhere (low frequency -> walkable slopes),
+        // plus fine detail; mountains rise much taller in the mountain biome.
+        $hills  = $this->fbm($x * 0.02, $z * 0.02) / 0.9375 - 0.5;        // -0.5..0.5 broad
+        $detail = $this->fbm($x * 0.06 + 100.0, $z * 0.06 + 100.0) / 0.9375 - 0.5;
+        $amp = 8.0 + $mount * 26.0;
+        $h = (int) round((self::SEA + 4) + $hills * $amp + $detail * 2.5);
         $h = max(0, min(self::MAX_H, $h));
         return $this->height[$x][$z] = $h;
     }
@@ -1315,10 +1380,12 @@ final class MinecraftController extends Controller
     private function applyRenderDist(): void
     {
         $d = (int) $this->settings['renderDist'] * self::BLOCK;
-        $this->e->xCameraRange($this->camH, 0.2, $d * 1.6);
-        // minimal fog: fully clear across the whole loaded area, only a faint haze
-        // right at the far unload boundary so chunk pop-in isn't jarring
-        $this->e->xCameraFogRange($this->camH, $d * 1.2, $d * 1.55);
+        // Chunks stream in out to ~d. The fog must reach full opacity a little BEFORE
+        // that boundary so chunks load/unload hidden inside the haze (no visible
+        // pop-in), while still leaving most of the render distance crisp. Raise the
+        // Render distance slider for a bigger clear area (you have the FPS for it).
+        $this->e->xCameraRange($this->camH, 0.2, $d * 1.02);
+        $this->e->xCameraFogRange($this->camH, $d * 0.72, $d * 0.96);
         $this->streamCX = PHP_INT_MAX; // force a streaming refresh
         $this->streamCZ = PHP_INT_MAX;
     }
@@ -1693,14 +1760,33 @@ final class MinecraftController extends Controller
     {
         if ($mx === 0.0) { return; }
         $tx = $this->px + $mx + ($mx > 0 ? self::HW : -self::HW);
-        if (!$this->blockedAt($tx, $this->pz)) { $this->px += $mx; }
+        if (!$this->blockedAt($tx, $this->pz)) { $this->px += $mx; return; }
+        // auto step-up: climb a 1-block rise (hills, stairs) if there is headroom
+        if ($this->onGround && $this->canStepUp($tx, $this->pz)) {
+            $this->py += self::BLOCK; $this->px += $mx;
+        }
     }
 
     private function moveAxisZ(float $mz): void
     {
         if ($mz === 0.0) { return; }
         $tz = $this->pz + $mz + ($mz > 0 ? self::HW : -self::HW);
-        if (!$this->blockedAt($this->px, $tz)) { $this->pz += $mz; }
+        if (!$this->blockedAt($this->px, $tz)) { $this->pz += $mz; return; }
+        if ($this->onGround && $this->canStepUp($this->px, $tz)) {
+            $this->py += self::BLOCK; $this->pz += $mz;
+        }
+    }
+
+    /** True if a single block rise here can be climbed (block at feet, clear above). */
+    private function canStepUp(float $x, float $z): bool
+    {
+        $bx = $this->cellOf($x); $bz = $this->cellOf($z);
+        $feet = $this->cellOf($this->py + 0.2);
+        if (!$this->solidCell($bx, $feet, $bz)) { return false; } // nothing to step onto
+        // body must be clear one block higher
+        $c1 = $this->cellOf($this->py + self::BLOCK + 0.2);
+        $c2 = $this->cellOf($this->py + self::BLOCK + self::PH - 0.2);
+        return !$this->solidCell($bx, $c1, $bz) && !$this->solidCell($bx, $c2, $bz);
     }
 
     private function applyGravity(): void
@@ -1792,6 +1878,7 @@ final class MinecraftController extends Controller
             $this->updateSky();
             $this->updateSkyObjects();
             $this->updateWeather();
+            $this->updatePuddles();
 
             $cx = (int) ($e->xGraphicsWidth() / 2);
             $cy = (int) ($e->xGraphicsHeight() / 2);
