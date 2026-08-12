@@ -35,6 +35,7 @@ trait Chunks
         $off  = [$x0, 0, $z0];
         $surf = [];
         $snowTop = $this->snowOn; // render upward ground faces as snow while it lies
+        $aoOn = (int) ($this->settings['aoshade'] ?? 1); // bake ambient occlusion into vertex colours
 
         // Sample the whole chunk volume (with a 1-cell border) ONCE into a flat array,
         // then read from it below. solidType() is comparatively expensive (edits lookup +
@@ -78,6 +79,11 @@ trait Chunks
             $dd = $dims[$d]; $du = $dims[$u]; $dv = $dims[$v];
             $mask = array_fill(0, $du * $dv, 0);
             $lite = array_fill(0, $du * $dv, 255);
+            $aomk = array_fill(0, $du * $dv, 0xFF); // packed 4-corner AO (2 bits each), 0xFF = no occlusion
+
+            // ambient-occlusion of one vertex from its two edge neighbours + diagonal corner
+            // (Minecraft's classic 0..3 term: darker where blocks meet in a concave corner).
+            $vAO = static fn (bool $s1, bool $s2, bool $co): int => ($s1 && $s2) ? 0 : 3 - ((int) $s1 + (int) $s2 + (int) $co);
 
             for ($xd = -1; $xd < $dd; $xd++) {
                 // build the face mask for this slice
@@ -100,7 +106,24 @@ trait Chunks
                         elseif ($ob)    { $mv = -$b; $lv = $lightOf($ax, $ay, $az, $b); }
                         elseif ($a === 10 && $b !== 10) { $mv = $a;  $lv = $lightOf($bx, $by, $bz, 10); }
                         elseif ($b === 10 && $a !== 10) { $mv = -$b; $lv = $lightOf($ax, $ay, $az, 10); }
-                        $mask[$n] = $mv; $lite[$n] = $lv; $n++;
+                        $mask[$n] = $mv; $lite[$n] = $lv;
+
+                        // per-corner AO from the neighbours on the exposed (air) side of the face
+                        if ($mv !== 0 && $aoOn) {
+                            $air = ($mv > 0) ? $pb : $pa; // air-side cell (the face is exposed to it)
+                            $oc = function (int $do, int $vo) use ($st, $off, $u, $v, $air): bool {
+                                $p = $air; $p[$u] += $do; $p[$v] += $vo;
+                                $t = $st($off[0] + $p[0], $off[1] + $p[1], $off[2] + $p[2]);
+                                return $t > 0 && $t !== 10;
+                            };
+                            $um = $oc(-1, 0); $up = $oc(1, 0); $vm = $oc(0, -1); $vp = $oc(0, 1);
+                            $ao0 = $vAO($um, $vm, $oc(-1, -1)); // (-u,-v)
+                            $ao1 = $vAO($up, $vm, $oc(1, -1));  // (+u,-v)
+                            $ao2 = $vAO($up, $vp, $oc(1, 1));   // (+u,+v)
+                            $ao3 = $vAO($um, $vp, $oc(-1, 1));  // (-u,+v)
+                            $aomk[$n] = $ao0 | ($ao1 << 2) | ($ao2 << 4) | ($ao3 << 6);
+                        }
+                        $n++;
                     }
                 }
                 // greedy-merge the mask into quads
@@ -110,13 +133,15 @@ trait Chunks
                     while ($i < $du) {
                         $c = $mask[$n + $i];
                         if ($c === 0) { $i++; continue; }
-                        $lc = $lite[$n + $i];   // merge only faces with the same light
+                        $lc = $lite[$n + $i];   // merge only faces with the same light AND AO,
+                        $ac = $aomk[$n + $i];   // so a merged quad's corner shading stays uniform
                         $w = 1;
-                        while ($i + $w < $du && $mask[$n + $i + $w] === $c && $lite[$n + $i + $w] === $lc) { $w++; }
+                        while ($i + $w < $du && $mask[$n + $i + $w] === $c && $lite[$n + $i + $w] === $lc && $aomk[$n + $i + $w] === $ac) { $w++; }
                         $hgt = 1; $stop = false;
                         while ($j + $hgt < $dv) {
                             for ($k = 0; $k < $w; $k++) {
-                                if ($mask[$n + $i + $k + $hgt * $du] !== $c || $lite[$n + $i + $k + $hgt * $du] !== $lc) { $stop = true; break; }
+                                $m = $n + $i + $k + $hgt * $du;
+                                if ($mask[$m] !== $c || $lite[$m] !== $lc || $aomk[$m] !== $ac) { $stop = true; break; }
                             }
                             if ($stop) { break; }
                             $hgt++;
@@ -140,11 +165,24 @@ trait Chunks
                         $a2 = $e->xAddVertex($s, $c2[0], $c2[1], $c2[2], $w, $hgt);
                         $a3 = $e->xAddVertex($s, $c3[0], $c3[1], $c3[2], 0, $hgt);
                         // explicit outward normal (avoids winding-dependent dark faces)
-                        // + baked skylight as a vertex-colour multiplier (dark caves).
                         $nrm = [0.0, 0.0, 0.0]; $nrm[$d] = ($c > 0) ? 1.0 : -1.0;
-                        foreach ([$a0, $a1, $a2, $a3] as $vi) {
+                        // Directional face shading (top brightest, sides dimmer, bottom darkest):
+                        // this is what makes plain cubes read as 3D under vertex-colour lighting.
+                        if ($d === 1)      { $dir = ($c > 0) ? 1.0 : 0.5; } // +Y top / -Y bottom
+                        elseif ($d === 2)  { $dir = 0.8; }                  // Z sides
+                        else               { $dir = 0.62; }                 // X sides
+                        // per-corner colour = baked skylight * face direction * ambient occlusion
+                        $aoF = [
+                            0.55 + 0.15 * ($ac & 3),
+                            0.55 + 0.15 * (($ac >> 2) & 3),
+                            0.55 + 0.15 * (($ac >> 4) & 3),
+                            0.55 + 0.15 * (($ac >> 6) & 3),
+                        ];
+                        $verts = [$a0, $a1, $a2, $a3];
+                        foreach ($verts as $ci => $vi) {
+                            $cv = (int) min(255.0, $lc * $dir * $aoF[$ci]);
                             $e->xVertexNormal($s, $vi, $nrm[0], $nrm[1], $nrm[2]);
-                            $e->xVertexColor($s, $vi, $lc, $lc, $lc);
+                            $e->xVertexColor($s, $vi, $cv, $cv, $cv);
                         }
                         // both windings so the face is never culled from the outside,
                         // regardless of per-axis chirality (backface culling keeps one)

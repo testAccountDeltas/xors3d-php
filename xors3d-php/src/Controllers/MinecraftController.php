@@ -165,7 +165,7 @@ final class MinecraftController extends Controller
         'width' => 1024, 'height' => 768, 'vsync' => 1,
         'sensitivity' => 0.5, 'invertY' => 0, 'fov' => 1.0,
         'fog' => 1, 'daynight' => 1, 'volume' => 0.8, 'renderDist' => 48,
-        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 0,
+        'bloom' => 0, 'godrays' => 1, 'weather' => 1, 'survival' => 1, 'minimap' => 0, 'aoshade' => 1,
         'worldSize' => 96, 'trees' => 1.0, 'water' => 1, 'mobs' => 8,
     ];
 
@@ -178,6 +178,7 @@ final class MinecraftController extends Controller
         ['key' => 'weather',     'label' => 'Weather (rain/snow)', 'type' => 'bool'],
         ['key' => 'survival',    'label' => 'Survival (health)',  'type' => 'bool'],
         ['key' => 'minimap',     'label' => 'Minimap',           'type' => 'bool'],
+        ['key' => 'aoshade',     'label' => 'Block shading (AO)', 'type' => 'bool'],
         ['key' => 'bloom',       'label' => 'Bloom (shader)',    'type' => 'bool'],
         ['key' => 'godrays',     'label' => 'Sun rays (shader)', 'type' => 'bool'],
         ['key' => 'volume',      'label' => 'Sound volume',      'type' => 'float', 'min' => 0.0, 'max' => 1.0, 'step' => 0.1],
