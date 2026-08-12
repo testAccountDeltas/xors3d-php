@@ -971,7 +971,6 @@ final class MinecraftController extends Controller
     /** Deterministically populate a chunk's trees into the edit overlay (once). */
     private function genTrees(int $cx, int $cz): void
     {
-        $this->trackSpill = true; $this->treeSpill = [];
         $x0 = $cx * self::CH; $z0 = $cz * self::CH;
         $D = self::TREE_DIST;
         for ($x = $x0; $x < $x0 + self::CH; $x++) {
@@ -990,7 +989,44 @@ final class MinecraftController extends Controller
                 if ($win) { $this->plantTreeData($x, $this->heightAt($x, $z) + 1, $z); }
             }
         }
-        $this->trackSpill = false;
+    }
+
+    /** Blueprint buildings that spawn randomly across the world (small/medium only;
+     *  the huge cathedral & harbour HQ are excluded to avoid generation hitches). */
+    private const WILD_STRUCTURES = [
+        'rustic_house', 'house3', 'medieval_house', 'birch_house', 'water_tank',
+        'temple', 'castle_grau', 'gate',
+    ];
+    private const SGRID = 10; // one candidate per 10x10-chunk cell; origin kept to the
+                              // central 4x4 so neighbours stay >=7 chunks (56 blocks) apart
+
+    /**
+     * Procedural landmarks: at most one blueprint building per SGRID x SGRID chunk cell,
+     * at a hashed origin chunk, on flat-ish dry ground. Deterministic from world seed so
+     * it regenerates identically. Stamped when that origin chunk first generates.
+     */
+    private function genStructures(int $cx, int $cz): void
+    {
+        $g = self::SGRID;
+        $gx = (int) floor($cx / $g); $gz = (int) floor($cz / $g);
+        // hashed origin within the central 4x4 of the cell (offset 3..6) so structures
+        // in neighbouring cells cannot land closer than ~7 chunks to each other
+        $ox = $gx * $g + 3 + (int) ($this->hash3($gx, 1, $gz) * 4);
+        $oz = $gz * $g + 3 + (int) ($this->hash3($gx, 2, $gz) * 4);
+        if ($cx !== $ox || $cz !== $oz) { return; }
+        if ($this->hash3($gx, 3, $gz) >= 0.55) { return; }   // ~55% of cells stay empty
+
+        $wx = $ox * self::CH; $wz = $oz * self::CH;
+        // keep clear of the spawn plaza
+        if (abs($wx - $this->cellOf($this->originX)) < self::PLAZA_R + 24
+            && abs($wz - $this->cellOf($this->originZ)) < self::PLAZA_R + 24) { return; }
+        $base = $this->heightAt($wx, $wz);
+        if ($base < self::SEA + 1) { return; }               // not in water
+        if ($this->biomeVal($wx, $wz) >= 0.82) { return; }   // not on steep mountains
+
+        $list = self::WILD_STRUCTURES;
+        $pick = $list[(int) ($this->hash3($gx, 5, $gz) * count($list))];
+        $this->placeStruct($pick, $wx, $base, $wz);
     }
 
     // ------------------------------------------------------------- value noise
@@ -1483,10 +1519,13 @@ final class MinecraftController extends Controller
         $spill = [];
         if (!isset($this->treeGen[$ck])) {
             $this->treeGen[$ck] = true;
+            // trees + procedural buildings write edits that can spill into neighbour
+            // chunks; track them so already-loaded neighbours get rebuilt (no missing
+            // canopies / half-built structures on the border-facing side).
+            $this->trackSpill = true; $this->treeSpill = [];
+            $this->genStructures($cx, $cz);
             $this->genTrees($cx, $cz);
-            // trees near a chunk edge spill leaf blocks into neighbour chunks; capture
-            // which already-loaded neighbours must be rebuilt so those leaves aren't
-            // missing (see-through canopies on the border-facing side).
+            $this->trackSpill = false;
             $spill = $this->treeSpill;
         }
 
