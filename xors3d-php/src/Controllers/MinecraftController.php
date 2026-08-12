@@ -11,6 +11,7 @@ use Xors3D\Controllers\Craft\Inventory;
 use Xors3D\Controllers\Craft\Mobs;
 use Xors3D\Controllers\Craft\Player;
 use Xors3D\Controllers\Craft\Sky;
+use Xors3D\Controllers\Craft\Storage;
 use Xors3D\Controllers\Craft\Structures;
 use Xors3D\Controllers\Craft\Survival;
 use Xors3D\Controllers\Craft\TerrainGen;
@@ -54,6 +55,7 @@ final class MinecraftController extends Controller
     use Assets;     // sounds, block templates + brushes, hand (src/Controllers/Craft/)
     use World;      // edits, solidType, (re)gen, break/place, doors, save/load (src/Controllers/Craft/)
     use Survival;   // health, fall damage, drowning, hearts HUD (src/Controllers/Craft/)
+    use Storage;    // chest inventories + transfer menu (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -103,12 +105,17 @@ final class MinecraftController extends Controller
         21 => ['White Wool',    'whitewool.png'],
         22 => ['Chiseled Stone', 'chiseledstone.png'],
         23 => ['Door',          'door.png'],
+        24 => ['Chest',         'chest.png'],
     ];
 
     private const DOOR = 23;
+    private const CHEST = 24;
 
     /** Current hotbar (block type per slot). Keys 1-9 pick the first nine; wheel cycles all. */
-    private array $hotbar = [1, 2, 3, 5, 15, 16, 17, 10, 23, 11, 18, 19, 20, 21, 22];
+    private array $hotbar = [1, 2, 3, 5, 15, 16, 17, 10, 23, 24, 11, 18, 19, 20, 21, 22];
+
+    /** @var array<string,array<int,int>> chest cell "x,y,z" => its stored inventory */
+    private array $chests = [];
 
     /** @var array<int,int> inventory: block type id => count held */
     private array $inv = [];
@@ -128,6 +135,7 @@ final class MinecraftController extends Controller
         ['in' => [4 => 4],            'out' => [15, 4]],  // 4 Brick      -> 4 Cobblestone
         ['in' => [13 => 4],           'out' => [11, 1]],  // 4 Coal       -> 1 Glowstone (lamp)
         ['in' => [2 => 4],            'out' => [4, 1]],   // 4 Dirt       -> 1 Brick
+        ['in' => [17 => 8],           'out' => [24, 1]],  // 8 Oak Planks -> 1 Chest
     ];
 
     /** @var array<string,int|float> */
@@ -481,11 +489,15 @@ final class MinecraftController extends Controller
                     $bz = $this->cellOf($pz + $dz * $q);
                     $this->placeAt($e, $bx, $by, $bz, $this->selectedType());
                 } elseif ($e->xKeyHit(Constants::KEY_E)) {
-                    // E opens/closes the targeted door
+                    // E: open a chest, otherwise open/close a door
                     $bx = $this->cellOf($px - $dx * $q);
                     $by = $this->cellOf($py - $dy * $q);
                     $bz = $this->cellOf($pz - $dz * $q);
-                    $this->toggleDoor($bx, $by, $bz);
+                    if ($this->solidType($bx, $by, $bz) === self::CHEST) {
+                        $this->openChest($bx, $by, $bz);
+                    } else {
+                        $this->toggleDoor($bx, $by, $bz);
+                    }
                 }
             }
 

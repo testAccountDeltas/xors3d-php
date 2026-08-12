@@ -48,6 +48,7 @@ trait World
     private function generateData(): void
     {
         $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
+        $this->chests = [];
         $this->starterKit();
         $this->buildStructures();
     }
@@ -159,6 +160,10 @@ trait World
         if ($type <= 0) { return; }
         $this->spawnBreakParticles($x, $y, $z, $type);
         $this->invAdd($this->dropFor($type)); // mined block drops into the inventory
+        if ($type === self::CHEST && isset($this->chests["$x,$y,$z"])) { // spill chest contents
+            foreach ($this->chests["$x,$y,$z"] as $t => $c) { $this->invAdd($t, $c); }
+            unset($this->chests["$x,$y,$z"]);
+        }
         $this->setEdit($x, $y, $z, 0); // record removal in the data model
         $this->play($this->sndBreak);
         $this->rebuildAround($x, $z);
@@ -211,7 +216,7 @@ trait World
     {
         // infinite world: only the seed + player edits + which chunks have trees.
         // Terrain/ores regenerate procedurally from the seed.
-        $data = ['seed' => $this->seed, 'edits' => $this->edits, 'treeGen' => array_keys($this->treeGen), 'inv' => $this->inv];
+        $data = ['seed' => $this->seed, 'edits' => $this->edits, 'treeGen' => array_keys($this->treeGen), 'inv' => $this->inv, 'chests' => $this->chests];
         $ok = @file_put_contents($this->worldFile(), json_encode($data)) !== false;
         $this->status = $ok ? 'World saved.' : 'Save failed.';
     }
@@ -239,6 +244,10 @@ trait World
         $this->inv = [];
         foreach (($d['inv'] ?? []) as $t => $c) { $this->inv[(int) $t] = (int) $c; }
         if ($this->inv === []) { $this->starterKit(); } // older saves had no inventory
+        $this->chests = [];
+        foreach (($d['chests'] ?? []) as $k => $items) {
+            $this->chests[(string) $k] = array_map('intval', (array) $items);
+        }
         $this->status = 'World loaded.'; // chunks stream in around the player on Play
     }
 }
