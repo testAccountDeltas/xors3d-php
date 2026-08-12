@@ -217,6 +217,10 @@ final class MinecraftController extends Controller
     private bool $wasGround = true;
     private bool $fallGrace = true; // skip fall damage on the initial spawn drop
     private float $timeShift = 0.0; // day-cycle offset (sleeping in a bed skips to morning)
+    private int $mmImg = 0;         // cached minimap image (rebuilt only when needed)
+    private int $mmBx = PHP_INT_MIN;
+    private int $mmBz = PHP_INT_MIN;
+    private int $mmMs = 0;
     private int $lastStep = 0;
     private int $mobTimer = 0;
     private float $dt = 1.0;     // frame time factor (1.0 == 60 FPS) for FPS-independent speed
