@@ -235,9 +235,9 @@ final class MinecraftController extends Controller
 
         $this->cam = new MouseLookCamera($e);
         $this->camH = $this->cam->handle();
-        $e->xCameraClsColor($this->camH, 140, 190, 235);
+        $e->xCameraClsColor($this->camH, 115, 185, 245);
         $e->xCameraRange($this->camH, 0.2, 600);
-        $e->xCameraFogColor($this->camH, 140, 190, 235);
+        $e->xCameraFogColor($this->camH, 115, 185, 245);
         $e->xCameraFogRange($this->camH, 60, 260);
 
         $this->sun = $e->xCreateLight(Constants::LIGHT_DIRECTIONAL);
@@ -641,8 +641,8 @@ final class MinecraftController extends Controller
 
         if (!(int) $this->settings['daynight']) {
             $this->dayF = 1.0;
-            $e->xCameraClsColor($this->camH, 140, 190, 235);
-            $e->xCameraFogColor($this->camH, 140, 190, 235);
+            $e->xCameraClsColor($this->camH, 115, 185, 245);
+            $e->xCameraFogColor($this->camH, 115, 185, 245);
             $e->xRotateEntity($this->sun, 50, 30, 0);
             $e->xLightColor($this->sun, 255, 250, 235);
             $e->xLightColor($this->moon, 0, 0, 0);
@@ -664,8 +664,12 @@ final class MinecraftController extends Controller
         $e->xLightColor($this->sun, (int) (255 * $day), (int) (250 * $day), (int) (235 * $day));
         $e->xLightColor($this->moon, (int) (80 * $night), (int) (95 * $night), (int) (150 * $night));
 
-        // sky: warm-blue day -> deep-blue night
-        $r = (22 + $day * 118); $g = (32 + $day * 158); $b = (60 + $day * 175);
+        // sky: bright blue by day -> deep blue at night. Use sqrt(day) so the sky reads
+        // blue for most of the daytime instead of dimming to grey at low sun angles.
+        $sd = sqrt($day);
+        $r = 30 + $sd * 85;   //  30 -> 115
+        $g = 45 + $sd * 145;  //  45 -> 190
+        $b = 78 + $sd * 172;  //  78 -> 250 (kept high for a blue tint)
 
         // overcast: pull the sky toward flat grey and dim the sun while it rains/snows
         $w = $this->wetness;
@@ -1769,8 +1773,11 @@ final class MinecraftController extends Controller
         // that boundary so chunks load/unload hidden inside the haze (no visible
         // pop-in), while still leaving most of the render distance crisp. Raise the
         // Render distance slider for a bigger clear area (you have the FPS for it).
-        $this->e->xCameraRange($this->camH, 0.2, $d * 1.02);
-        $this->e->xCameraFogRange($this->camH, $d * 0.72, $d * 0.96);
+        $this->e->xCameraRange($this->camH, 0.2, $d * 1.04);
+        // thin haze only at the far edge: crisp across ~85% of the view, fog reaches full
+        // opacity just before the chunk-unload boundary so pop-in stays hidden (free -
+        // no change to render distance or chunk work).
+        $this->e->xCameraFogRange($this->camH, $d * 0.85, $d * 0.98);
         $this->streamCX = PHP_INT_MAX; // force a streaming refresh
         $this->streamCZ = PHP_INT_MAX;
     }
