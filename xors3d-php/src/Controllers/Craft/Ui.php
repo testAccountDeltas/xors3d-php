@@ -81,7 +81,11 @@ trait Ui
         // block shader on/off changes both the mesh effect and the baked shading, so
         // rebuild loaded chunks (and drop the cache) when it toggles.
         $prevShade = $this->blockShade;
-        $this->refreshBlockShade();
+        if ((int) ($this->settings['blockfx'] ?? 0) === 1 && $this->blockFX === 0) {
+            $this->setupBlockFX($this->e); // lazy-load the shader the first time it's enabled
+        } else {
+            $this->refreshBlockShade();
+        }
         if ($this->blockShade !== $prevShade && $this->chunkMesh !== []) {
             $this->clearChunkCache();
             $this->remeshLoaded();

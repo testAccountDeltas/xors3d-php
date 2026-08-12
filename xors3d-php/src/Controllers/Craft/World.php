@@ -48,7 +48,7 @@ trait World
      */
     private function generateData(): void
     {
-        $this->seed = mt_rand() / mt_getrandmax() * 1000.0;
+        $this->seed = ($s = getenv('CRAFT_SEED')) !== false ? (float) $s : mt_rand() / mt_getrandmax() * 1000.0;
         $this->chests = [];
         $this->starterKit();
         $this->buildStructures();

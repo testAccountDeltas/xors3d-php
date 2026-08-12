@@ -18,10 +18,19 @@ use Xors3D\Ffi\Engine;
  */
 trait BlockShader
 {
-    /** Load + validate the block shader; sets $this->blockOK / $this->blockShade. */
+    /**
+     * Load + validate the block shader; sets $this->blockOK / $this->blockShade.
+     *
+     * IMPORTANT (D3D9 / perf): the per-pixel shader runs per chunk-entity, so with it on
+     * xRenderWorld jumps from ~1.6ms to ~6.7ms (a big FPS hit). It is therefore OFF by
+     * default and loaded LAZILY - only when actually enabled - so players who leave it off
+     * keep the fast fixed-function path and the free baked AO/directional look.
+     */
     private function setupBlockFX(Engine $e): void
     {
         $this->blockOK = false;
+        if ((int) ($this->settings['blockfx'] ?? 0) !== 1) { $this->refreshBlockShade(); return; }
+        if ($this->blockFX !== 0) { $this->blockOK = true; $this->refreshBlockShade(); return; } // already loaded
         $fx = dirname(__DIR__, 3) . '/assets/shaders/Blocks.fx';
         if (is_file($fx)) {
             $this->blockFX = $e->xLoadFXFile($fx);
@@ -37,7 +46,7 @@ trait BlockShader
     /** Whether the shader is actually used right now (supported AND enabled). */
     private function refreshBlockShade(): void
     {
-        $this->blockShade = $this->blockOK && (int) ($this->settings['blockfx'] ?? 1) === 1;
+        $this->blockShade = $this->blockOK && (int) ($this->settings['blockfx'] ?? 0) === 1;
     }
 
     /** Attach the shader to a freshly built chunk mesh (semantics + current constants). */
