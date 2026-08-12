@@ -1471,10 +1471,24 @@ final class MinecraftController extends Controller
         $surf = [];
         $snowTop = $this->snowOn; // render upward ground faces as snow while it lies
 
+        // baked skylight: a face is bright if the air cell it faces sees open sky, dark
+        // otherwise (caves / under overhangs / indoors). Glowstone always glows. The
+        // value is a vertex-colour multiplier on top of the dynamic day/night lighting.
+        $colTop = [];
+        $topOf = function (int $ax, int $az) use (&$colTop): int {
+            $k = "$ax,$az";
+            return $colTop[$k] ??= $this->groundTop($ax, $az);
+        };
+        $lightOf = function (int $ax, int $ay, int $az, int $ftype) use ($topOf): int {
+            if ($ftype === 11) { return 255; }          // glowstone emits
+            return ($ay > $topOf($ax, $az)) ? 255 : 77; // open sky vs shadowed
+        };
+
         for ($d = 0; $d < 3; $d++) {
             $u = ($d + 1) % 3; $v = ($d + 2) % 3;
             $dd = $dims[$d]; $du = $dims[$u]; $dv = $dims[$v];
             $mask = array_fill(0, $du * $dv, 0);
+            $lite = array_fill(0, $du * $dv, 255);
 
             for ($xd = -1; $xd < $dd; $xd++) {
                 // build the face mask for this slice
@@ -1482,19 +1496,22 @@ final class MinecraftController extends Controller
                 for ($xv = 0; $xv < $dv; $xv++) {
                     for ($xu = 0; $xu < $du; $xu++) {
                         $pa = [0, 0, 0]; $pa[$d] = $xd; $pa[$u] = $xu; $pa[$v] = $xv;
-                        $a = $this->solidType($off[0] + $pa[0], $off[1] + $pa[1], $off[2] + $pa[2]);
+                        $ax = $off[0] + $pa[0]; $ay = $off[1] + $pa[1]; $az = $off[2] + $pa[2];
+                        $a = $this->solidType($ax, $ay, $az);
                         $pb = $pa; $pb[$d] = $xd + 1;
-                        $b = $this->solidType($off[0] + $pb[0], $off[1] + $pb[1], $off[2] + $pb[2]);
+                        $bx = $off[0] + $pb[0]; $by = $off[1] + $pb[1]; $bz = $off[2] + $pb[2];
+                        $b = $this->solidType($bx, $by, $bz);
                         // glass (10) is transparent: it never hides the block behind it, so
                         // its neighbours still draw their faces and you can see through windows.
                         $oa = ($a > 0 && $a !== 10);   // a is opaque
                         $ob = ($b > 0 && $b !== 10);   // b is opaque
-                        if ($oa && $ob) { $mask[$n++] = 0; }               // both opaque: hidden
-                        elseif ($oa)    { $mask[$n++] = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a; }
-                        elseif ($ob)    { $mask[$n++] = -$b; }
-                        elseif ($a === 10 && $b !== 10) { $mask[$n++] = $a; }  // glass face toward air/glass-gap
-                        elseif ($b === 10 && $a !== 10) { $mask[$n++] = -$b; }
-                        else            { $mask[$n++] = 0; }               // air|air or glass|glass
+                        $mv = 0; $lv = 255;
+                        if ($oa && $ob) { $mv = 0; }                        // both opaque: hidden
+                        elseif ($oa)    { $mv = ($snowTop && $d === 1 && $this->coverable($a)) ? 6 : $a; $lv = $lightOf($bx, $by, $bz, $a); }
+                        elseif ($ob)    { $mv = -$b; $lv = $lightOf($ax, $ay, $az, $b); }
+                        elseif ($a === 10 && $b !== 10) { $mv = $a;  $lv = $lightOf($bx, $by, $bz, 10); }
+                        elseif ($b === 10 && $a !== 10) { $mv = -$b; $lv = $lightOf($ax, $ay, $az, 10); }
+                        $mask[$n] = $mv; $lite[$n] = $lv; $n++;
                     }
                 }
                 // greedy-merge the mask into quads
@@ -1504,12 +1521,13 @@ final class MinecraftController extends Controller
                     while ($i < $du) {
                         $c = $mask[$n + $i];
                         if ($c === 0) { $i++; continue; }
+                        $lc = $lite[$n + $i];   // merge only faces with the same light
                         $w = 1;
-                        while ($i + $w < $du && $mask[$n + $i + $w] === $c) { $w++; }
+                        while ($i + $w < $du && $mask[$n + $i + $w] === $c && $lite[$n + $i + $w] === $lc) { $w++; }
                         $hgt = 1; $stop = false;
                         while ($j + $hgt < $dv) {
                             for ($k = 0; $k < $w; $k++) {
-                                if ($mask[$n + $i + $k + $hgt * $du] !== $c) { $stop = true; break; }
+                                if ($mask[$n + $i + $k + $hgt * $du] !== $c || $lite[$n + $i + $k + $hgt * $du] !== $lc) { $stop = true; break; }
                             }
                             if ($stop) { break; }
                             $hgt++;
@@ -1533,9 +1551,11 @@ final class MinecraftController extends Controller
                         $a2 = $e->xAddVertex($s, $c2[0], $c2[1], $c2[2], $w, $hgt);
                         $a3 = $e->xAddVertex($s, $c3[0], $c3[1], $c3[2], 0, $hgt);
                         // explicit outward normal (avoids winding-dependent dark faces)
+                        // + baked skylight as a vertex-colour multiplier (dark caves).
                         $nrm = [0.0, 0.0, 0.0]; $nrm[$d] = ($c > 0) ? 1.0 : -1.0;
                         foreach ([$a0, $a1, $a2, $a3] as $vi) {
                             $e->xVertexNormal($s, $vi, $nrm[0], $nrm[1], $nrm[2]);
+                            $e->xVertexColor($s, $vi, $lc, $lc, $lc);
                         }
                         // both windings so the face is never culled from the outside,
                         // regardless of per-axis chirality (backface culling keeps one)
@@ -1594,6 +1614,7 @@ final class MinecraftController extends Controller
 
         $mesh = $e->xCreateMesh();
         $this->greedyMesh($mesh, $x0, $z0, $yMax); // sets its own vertex normals + double winding
+        $e->xEntityFX($mesh, Constants::FX_VERTEXCOLOR); // use baked skylight vertex colours
         $e->xEntityPickMode($mesh, 2);
 
         $list = [];
