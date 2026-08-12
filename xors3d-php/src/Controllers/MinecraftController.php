@@ -8,6 +8,7 @@ use Xors3D\Controllers\Craft\Assets;
 use Xors3D\Controllers\Craft\Bed;
 use Xors3D\Controllers\Craft\Chunks;
 use Xors3D\Controllers\Craft\Effects;
+use Xors3D\Controllers\Craft\Furnace;
 use Xors3D\Controllers\Craft\Inventory;
 use Xors3D\Controllers\Craft\Mobs;
 use Xors3D\Controllers\Craft\Player;
@@ -58,6 +59,7 @@ final class MinecraftController extends Controller
     use Survival;   // health, fall damage, drowning, hearts HUD (src/Controllers/Craft/)
     use Storage;    // chest inventories + transfer menu (src/Controllers/Craft/)
     use Bed;        // sleep (B) at night near a bed to skip to morning (src/Controllers/Craft/)
+    use Furnace;    // smelting menu (sand->glass etc) with fuel (src/Controllers/Craft/)
 
     public const TITLE = 'Minecraft-like game (menu, walk, water, sound)';
 
@@ -108,13 +110,15 @@ final class MinecraftController extends Controller
         22 => ['Chiseled Stone', 'chiseledstone.png'],
         23 => ['Door',          'door.png'],
         24 => ['Chest',         'chest.png'],
+        25 => ['Furnace',       'furnace.png'],
     ];
 
     private const DOOR = 23;
     private const CHEST = 24;
+    private const FURNACE = 25;
 
     /** Current hotbar (block type per slot). Keys 1-9 pick the first nine; wheel cycles all. */
-    private array $hotbar = [1, 2, 3, 5, 15, 16, 17, 10, 23, 24, 11, 18, 19, 20, 21, 22];
+    private array $hotbar = [1, 2, 3, 5, 15, 16, 17, 10, 23, 24, 25, 11, 18, 19, 20, 21, 22];
 
     /** @var array<string,array<int,int>> chest cell "x,y,z" => its stored inventory */
     private array $chests = [];
@@ -138,7 +142,21 @@ final class MinecraftController extends Controller
         ['in' => [13 => 4],           'out' => [11, 1]],  // 4 Coal       -> 1 Glowstone (lamp)
         ['in' => [2 => 4],            'out' => [4, 1]],   // 4 Dirt       -> 1 Brick
         ['in' => [17 => 8],           'out' => [24, 1]],  // 8 Oak Planks -> 1 Chest
+        ['in' => [15 => 8],           'out' => [25, 1]],  // 8 Cobblestone-> 1 Furnace
     ];
+
+    /**
+     * Smelting recipes (furnace): input type => output type. Each smelt burns one fuel.
+     */
+    private const SMELT = [
+        9  => 10,  // Sand        -> Glass
+        15 => 3,   // Cobblestone -> Stone
+        8  => 13,  // Log         -> Coal (charcoal)
+        2  => 4,   // Dirt        -> Brick (fired)
+    ];
+
+    /** Block types that can be burned as furnace fuel. */
+    private const FUELS = [13, 8, 5, 17, 18]; // coal, log, wood, oak/dark planks
 
     /** @var array<string,int|float> */
     private array $settings = [
@@ -496,11 +514,10 @@ final class MinecraftController extends Controller
                     $bx = $this->cellOf($px - $dx * $q);
                     $by = $this->cellOf($py - $dy * $q);
                     $bz = $this->cellOf($pz - $dz * $q);
-                    if ($this->solidType($bx, $by, $bz) === self::CHEST) {
-                        $this->openChest($bx, $by, $bz);
-                    } else {
-                        $this->toggleDoor($bx, $by, $bz);
-                    }
+                    $bt = $this->solidType($bx, $by, $bz);
+                    if ($bt === self::CHEST)        { $this->openChest($bx, $by, $bz); }
+                    elseif ($bt === self::FURNACE)  { $this->openFurnace(); }
+                    else                            { $this->toggleDoor($bx, $by, $bz); }
                 }
             }
 
