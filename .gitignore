@@ -5,6 +5,10 @@ xors3d-php/craft-world.json
 # personal project notes (not for the public repo)
 PROJECT_NOTES.md
 
+# reference-only engine sources (X-Ray SoC) and downloaded x64 PHP builds - not part of this repo
+soc_engine/
+php-8.5.9-*/
+
 # junk
 Thumbs.db
 *.log
